@@ -1,11 +1,12 @@
 name: lookup
 
 # Look hashes up the cheap way first:
-#   1. the prebuilt maps (letters+digits, letters+digits+specials)
-#   2. a wordlist of common passwords
-#   3. brute force as the last resort (resumable - the farm workflow can
-#      continue it)
-# Each stage is skipped when the previous one already solved everything.
+#   1. the combined password list (SecLists + RockYou, ~34M candidates) that
+#      lives in the 'wordlists' release - downloaded, never rebuilt
+#   2. brute force as the last resort, resumable - the farm workflow can
+#      continue it later
+#
+# MD5 only. Each stage is skipped when the previous one solved everything.
 
 on:
   workflow_dispatch:
@@ -19,13 +20,9 @@ on:
         required: false
         default: ''
       wordlist:
-        description: 'wordlist to try: a path, "combined" (SecLists+RockYou), or "none"'
+        description: 'wordlist: "combined" (from the release), a path, or "none"'
         required: false
         default: 'combined'
-      use_maps:
-        description: 'use the prebuilt maps from the "maps" release'
-        type: boolean
-        default: true
       charset:
         description: 'charset for the brute force fallback'
         required: false
@@ -33,7 +30,7 @@ on:
       min:
         description: 'min length for the brute force fallback'
         required: false
-        default: '1'
+        default: '6'
       max:
         description: 'max length for the brute force fallback'
         required: false
@@ -110,63 +107,47 @@ jobs:
             echo "::notice::no hashes to look up"
           fi
 
-      - name: Stage 1 - prebuilt maps
-        id: stage_maps
-        if: inputs.use_maps && steps.collect.outputs.total != '0'
+      - name: Stage 1 - the combined password list
+        id: stage_wordlist
+        if: steps.collect.outputs.total != '0' && inputs.wordlist != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          mkdir -p maps
-          if gh release download maps --pattern '*.hmmap' --dir maps \
-               --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-            echo "maps downloaded: $(ls maps | wc -l) file(s)"
-            ./hashmap search -F "$FARM_DIR/hashes.txt" maps/ \
-                -o "$FARM_DIR/hits-maps.txt" || true
-          else
-            echo "no maps release yet - skipping the map stage"
-          fi
-          found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
-          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
-          echo "found=$found" >> "$GITHUB_OUTPUT"
-          echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
-
-      - name: Stage 2 - common passwords
-        id: stage_wordlist
-        if: steps.stage_maps.outputs.remaining != '0' && inputs.wordlist != 'none'
-        run: |
-          set -eu
           wl="${{ inputs.wordlist }}"
           if [ "$wl" = "combined" ]; then
-            # build the combined list (SecLists + RockYou, deduplicated)
+            # the list lives in the 'wordlists' release - download it, never
+            # rebuild it here
             wl="$FARM_DIR/combined.txt"
-            ./tools/fetch-wordlists.sh --fast --out "$wl" \
-                --cache "$FARM_DIR/cache" || wl=""
-            if [ -z "$wl" ]; then
-              echo "could not build the combined list - skipping the stage"
-              echo "remaining=${{ steps.stage_maps.outputs.remaining }}" >> "$GITHUB_OUTPUT"
-              exit 0
+            if ! gh release download wordlists --pattern 'combined.txt' \
+                    --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+              echo "published list not found - building the fast profile once"
+              ./tools/fetch-wordlists.sh --fast --out "$wl" \
+                  --cache "$FARM_DIR/cache" || wl=""
             fi
           fi
-          if [ ! -f "$wl" ]; then
-            echo "wordlist '$wl' not found - skipping the wordlist stage"
-            echo "remaining=${{ steps.stage_maps.outputs.remaining }}" >> "$GITHUB_OUTPUT"
+          if [ -z "$wl" ] || [ ! -f "$wl" ]; then
+            echo "no wordlist available - skipping the stage"
+            echo "remaining=${{ steps.collect.outputs.total }}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "wordlist: $wl ($(wc -l < "$wl" | tr -d ' ') candidates)"
           extra=""
           if [ "${{ inputs.stop_first }}" = "true" ]; then extra="--first"; fi
           saltargs=""
           if [ -n "${{ inputs.salt }}" ]; then
             saltargs="-s ${{ inputs.salt }} -p ${{ inputs.saltpos }}"
           fi
+          set +e
           ./hashmap wordlist -F "$FARM_DIR/hashes.txt" -w "$wl" \
-              $extra $saltargs -o "$FARM_DIR/hits-wordlist.txt" || true
+              $extra $saltargs -o "$FARM_DIR/hits-wordlist.txt" -t "$(nproc)"
+          set -e
           found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
           echo "found=$found" >> "$GITHUB_OUTPUT"
           echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
 
-      - name: Stage 3 - brute force fallback
+      - name: Stage 2 - brute force fallback
         id: stage_brute
         if: steps.stage_wordlist.outputs.remaining != '0'
         run: |
@@ -200,18 +181,6 @@ jobs:
           total=$(wc -l < "$FARM_DIR/hashes.txt" 2>/dev/null | tr -d ' ' || echo 0)
           echo "found=$found" >> "$GITHUB_OUTPUT"
           echo "total=$total" >> "$GITHUB_OUTPUT"
-          echo "### lookup"
-          echo ''
-          echo "cracked **$found of $total**"
-          echo ''
-          if [ -s "$FARM_DIR/results.txt" ]; then
-            echo '```'
-            cat "$FARM_DIR/results.txt"
-            echo '```'
-          else
-            echo 'nothing cracked yet - the brute force stage can be continued'
-            echo 'with the farm workflow (it resumes from the saved state).'
-          fi
           {
             echo
             echo '### lookup'
@@ -223,7 +192,8 @@ jobs:
               cat "$FARM_DIR/results.txt"
               echo '```'
             else
-              echo 'nothing cracked yet.'
+              echo 'nothing cracked yet - the brute force stage can be continued'
+              echo 'with the farm workflow (it resumes from the saved state).'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

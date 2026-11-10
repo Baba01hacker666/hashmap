@@ -1,29 +1,23 @@
 name: wordlists
 
-# Builds the combined password list (SecLists + RockYou, deduplicated) and
-# optionally uses it for a quick hash lookup.
+# The combined password list (SecLists + RockYou, deduplicated) lives in the
+# 'wordlists' release - in the cloud, not in the repository.
 #
-# The lists are fetched here, never committed: the repository stays small and
-# the lists stay current.
+# This workflow does NOT rebuild it on every run: it downloads the published
+# list and uses it. Rebuilding happens only when the list is missing or when
+# 'rebuild' is requested.
 
 on:
   workflow_dispatch:
     inputs:
-      profile:
-        description: 'which lists to combine'
-        type: choice
-        options:
-          - fast
-          - full
-        default: full
       hashes:
         description: 'hashes to look up with the combined list (optional)'
         required: false
         default: ''
-      publish:
-        description: 'attach the combined list to the "wordlists" release'
+      rebuild:
+        description: 'rebuild the list instead of downloading the published one'
         type: boolean
-        default: true
+        default: false
   schedule:
     - cron: '23 4 * * 2'
 
@@ -35,7 +29,7 @@ env:
 
 jobs:
   build:
-    name: combine wordlists
+    name: use the combined wordlist
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -45,13 +39,28 @@ jobs:
       - name: Build hashmap
         run: make
 
-      - name: Fetch and combine the lists
+      - name: Get the combined list
+        id: get
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           mkdir -p "$FARM_DIR"
-          ./tools/fetch-wordlists.sh --${{ inputs.profile }} \
-              --out "$FARM_DIR/combined.txt" --cache "$FARM_DIR/cache"
-          ls -lh "$FARM_DIR/combined.txt"
+          built=false
+          if [ "${{ inputs.rebuild }}" = "true" ]; then
+            echo "rebuild requested"
+          elif gh release download wordlists --pattern 'combined.txt' \
+                 --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "downloaded the published list"
+          else
+            echo "no published list yet - building it once"
+            ./tools/fetch-wordlists.sh --full \
+                --out "$FARM_DIR/combined.txt" --cache "$FARM_DIR/cache"
+            built=true
+          fi
+          [ -s "$FARM_DIR/combined.txt" ] || {
+            echo "::error::no combined list"; exit 1; }
+          echo "built=$built" >> "$GITHUB_OUTPUT"
 
       - name: Statistics
         id: stats
@@ -61,17 +70,10 @@ jobs:
           lines=$(wc -l < "$f" | tr -d ' ')
           size=$(du -h "$f" | cut -f1)
           sha=$(sha256sum "$f" | cut -d' ' -f1)
+          echo "$sha  combined.txt" > "$FARM_DIR/SHA256SUMS"
           echo "lines=$lines" >> "$GITHUB_OUTPUT"
           echo "size=$size" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "$sha  combined.txt" > "$FARM_DIR/SHA256SUMS"
-          echo "### combined wordlist"
-          echo ''
-          echo "| metric | value |"
-          echo "|--------|-------|"
-          echo "| candidates | $lines |"
-          echo "| size | $size |"
-          echo "| sha256 | \`$sha\` |"
           {
             echo
             echo '### combined wordlist'
@@ -92,7 +94,7 @@ jobs:
               | grep -Eo '[0-9a-fA-F]{32}' | tr 'A-F' 'a-f' \
               | sort -u > "$FARM_DIR/hashes.txt" || true
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
-          echo "looking up $total hash(es)"
+          echo "looking up $total hash(es) in ${{ steps.stats.outputs.lines }} candidates"
           set +e
           ./hashmap wordlist -F "$FARM_DIR/hashes.txt" \
               -w "$FARM_DIR/combined.txt" -t "$(nproc)" \
@@ -104,16 +106,15 @@ jobs:
           else
             echo "nothing cracked"
           fi
-
-      - name: Upload the combined list
-        uses: actions/upload-artifact@v4
-        with:
-          name: combined-wordlist-${{ inputs.profile || 'scheduled' }}
-          path: |
-            ${{ env.FARM_DIR }}/combined.txt
-            ${{ env.FARM_DIR }}/SHA256SUMS
-          if-no-files-found: ignore
-          retention-days: 30
+          {
+            echo
+            if [ -s "$FARM_DIR/results.txt" ]; then
+              echo '**cracked:**'
+              echo '```'
+              cat "$FARM_DIR/results.txt"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the lookup results
         if: inputs.hashes != ''
@@ -124,23 +125,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
-      - name: Attach to the 'wordlists' release
-        if: inputs.publish
+      - name: Publish the list (only when it was rebuilt)
+        if: steps.get.outputs.built == 'true' || inputs.rebuild == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: wordlists
           name: hashmap wordlists
           body: |
             The combined password list: SecLists (MIT) plus RockYou,
-            deduplicated and sorted.
+            deduplicated and sorted. MD5 only.
 
             | metric | value |
             |--------|-------|
             | candidates | ${{ steps.stats.outputs.lines }} |
             | size | ${{ steps.stats.outputs.size }} |
             | sha256 | `${{ steps.stats.outputs.sha256 }}` |
-
-            Use it with the wordlist mode:
 
             ```sh
             hashmap wordlist -H <md5hex> -w combined.txt

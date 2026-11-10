@@ -103,8 +103,6 @@ Prints `<hash>:<plaintext>` for every hash found in the map. Exit code `1` if
 some hash was not found. Scanning stops as soon as all requested hashes were
 found, so a directory of shards is cheap when the answer is in an early one.
 
-See [maps.md](maps.md) for the ready-to-download maps.
-
 ## wordlist
 
 ```sh
@@ -124,8 +122,9 @@ hashmap wordlist -F targets.txt -w big.txt -o cracked.txt --first
 Exit code `0` when every target was found (`--first`: when one was).
 
 A small list of the most common passwords ships with the tool:
-`wordlists/common.txt`. The big lists (SecLists + RockYou, deduplicated) are
-fetched with `make wordlist-full` — see [wordlists.md](wordlists.md).
+`wordlists/common.txt`. The big list (SecLists + RockYou, deduplicated, ~34M
+candidates) is fetched with `make wordlist-full` — see
+[wordlists.md](wordlists.md).
 
 ## --first
 

@@ -26,8 +26,7 @@ gh workflow run lookup.yml \
 |-------|---------|
 | `hashes` | the hashes to look up, one md5 hex per line |
 | `hash_file` | a file in the repository with hashes |
-| `wordlist` | wordlist to try: a path, `combined` (SecLists+RockYou, built on the fly) or `none` |
-| `use_maps` | use the prebuilt maps (default yes) |
+| `wordlist` | `combined` (from the release), a path, or `none` |
 | `charset`, `min`, `max` | keyspace for the brute force fallback |
 | `salt`, `saltpos` | salt for all stages |
 | `stop_first` | stop as soon as one hash is cracked |
@@ -47,29 +46,21 @@ Whatever the stage, the cracked pairs are written as `<hash>:<plaintext>`.
 
 ## The stages in detail
 
-### 1. maps
+### 1. the combined password list
 
 ```sh
-gh release download maps --pattern '*.hmmap' --dir maps
-hashmap search -F hashes.txt maps/ -o hits-maps.txt
+gh release download wordlists --pattern 'combined.txt' --dir .
+hashmap wordlist -F hashes.txt -w combined.txt -o hits-wordlist.txt
 ```
 
-`search` accepts a whole directory and stops as soon as every hash was found.
-
-### 2. wordlist
-
-```sh
-hashmap wordlist -F hashes.txt -w wordlists/common.txt -o hits-wordlist.txt
-```
-
-With `-f wordlist=combined` the workflow builds the combined list first
-(SecLists + RockYou, ~34M deduplicated candidates, about a minute).
+The list is built once by the `wordlists` workflow and then only downloaded.
+If it is not published yet, the workflow builds the fast profile once.
 
 The `wordlist` mode hashes every candidate of the list (one thread per core,
 salted or not) and compares it against the targets — much cheaper than a
 keyspace search, and it covers passwords that contain characters no map has.
 
-### 3. brute force
+### 2. brute force
 
 ```sh
 hashmap brute -F hashes.txt -c lower+digits --min 1 --max 6 \
@@ -84,7 +75,6 @@ The state file makes this stage resumable: if the time budget runs out, the
 The same three stages work locally, without the workflow:
 
 ```sh
-hashmap search -H <md5hex> maps/
-hashmap wordlist -H <md5hex> -w wordlists/common.txt
+hashmap wordlist -H <md5hex> -w wordlists/combined.txt
 hashmap brute -H <md5hex> -c alnum --max 6 --state run.state
 ```
