@@ -35,21 +35,6 @@ int hm_mode_brute(int argc, char **argv)
         hm_usage_brute();
         return 2;
     }
-    if (hm_optind < argc) {
-        /* positional hashes allowed too */
-        for (int i = hm_optind; i < argc; i++) {
-            if (cfg.ntargets >= HM_MAX_TARGETS) {
-                fprintf(stderr, "[-] too many targets\n");
-                free(cfg.targets);
-                return 2;
-            }
-            if (hm_parse_target(argv[i], &cfg.targets[cfg.ntargets]) < 0) {
-                free(cfg.targets);
-                return 2;
-            }
-            cfg.ntargets++;
-        }
-    }
     if (cfg.ntargets < 1) {
         fprintf(stderr,
                 "[-] brute needs at least one target: -H <md5hex> or "

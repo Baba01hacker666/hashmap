@@ -116,7 +116,7 @@ void hm_fmt_u64(uint64_t v, char *buf, size_t n)
 
     if (v == 0) {
         if (n > 0)
-            buf[0] = '\0';
+            snprintf(buf, n, "0");
         return;
     }
     while (v) {

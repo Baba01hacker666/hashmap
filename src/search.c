@@ -28,7 +28,6 @@ int hm_mode_search(int argc, char **argv)
     static const hm_longopt_t lopts[] = {
         { "hash", 1, 'H' },
         { "hash-file", 1, 'F' },
-        { "file", 1, 'F' },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -46,7 +45,7 @@ int hm_mode_search(int argc, char **argv)
     }
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:F:f:h", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:h", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -63,8 +62,7 @@ int hm_mode_search(int argc, char **argv)
             nwants++;
             break;
         }
-        case 'F':
-        case 'f': {
+        case 'F': {
             hm_target_t *tgs = malloc(sizeof(hm_target_t) * (size_t)HM_MAX_TARGETS);
             int nt = 0;
 

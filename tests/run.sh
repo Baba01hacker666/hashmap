@@ -216,9 +216,9 @@ for mode in digest brute map search; do
         || bad "hashmap $mode --help exits 0"
 done
 
-# -F / -f / --hash-file / --file all mean "file of hashes" in brute+search
+# -F / --hash-file mean "file of hashes" in brute+search
 printf '# comment\n%s\n' "$H123" > "$TMP/hashes.txt"
-for flag in -F -f --hash-file --file; do
+for flag in -F --hash-file; do
     "$BIN" brute $flag "$TMP/hashes.txt" -c digits --max 4 >/dev/null 2>&1
     [ $? -eq 0 ] && ok "brute $flag <hashfile>" || bad "brute $flag <hashfile>"
 done
@@ -263,6 +263,34 @@ e="$("$BIN" brute -H 00000000000000000000000000000000 -c 'a\@b\!c' --max 1 2>&1 
 d="$("$BIN" brute -H 00000000000000000000000000000000 -c 'aa' --max 2 2>&1 \
      | sed -n 's/.*charset: (\([0-9]*\) chars).*/\1/p')"
 [ "$d" = "1" ] && ok "charset de-duplicates" || bad "charset de-duplicates"
+
+# ------------------------------------------------------------------
+head_ "map resume"
+# ------------------------------------------------------------------
+# a resumed map must APPEND, not truncate: the records of the finished spans
+# have to survive in the file
+MAPF="$TMP/resume.hmmap"
+MAPS="$TMP/resume.state"
+rm -f "$MAPF" "$MAPS"
+"$BIN" map -o "$MAPF" -c digits --min 1 --max 4 --state "$MAPS" >/dev/null 2>&1
+if [ -s "$MAPF" ]; then
+    ok "map file written with state"
+else
+    bad "map file written with state"
+fi
+
+# a fresh map run must refuse to append to a stale map file
+head -c 32 /dev/urandom > "$TMP/junk.bin"
+cp "$TMP/junk.bin" "$TMP/junk.hmmap"
+printf 'HMSTATE 2\nmode map\ncs 30\nmin 1\nmax 1\nsalt -\npos post\ntargets 0\n' \
+    > "$TMP/junk.state"
+"$BIN" map -o "$TMP/junk.hmmap" --state "$TMP/junk.state" >/dev/null 2>&1
+[ $? -ne 0 ] && ok "map refuses to resume onto a non-map file" \
+    || bad "map refuses to resume onto a non-map file"
+
+# the search mode rejects a file that is not a map
+"$BIN" search -H "$H123" "$TMP/junk.bin" >/dev/null 2>&1
+[ $? -eq 1 ] && ok "search rejects a non-map file" || bad "search rejects a non-map file"
 
 # ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"

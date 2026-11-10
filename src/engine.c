@@ -33,6 +33,9 @@
 /* ------------------------------------------------------------------ */
 
 #define HM_STATE_MAGIC "HMSTATE 2"
+
+/* how often a worker publishes its progress to the shared counter */
+#define HM_PROGRESS_FLUSH 4096
 #define HM_MAX_SPANS_IN_STATE 1000000
 
 typedef struct {
@@ -797,6 +800,7 @@ static void *worker(void *arg)
             uint64_t hi;
             uint64_t idx;
             uint64_t done = 0;
+            uint64_t flushed = 0; /* candidates already counted in g_done_len */
 
             if (k >= q->n)
                 break; /* queue exhausted -> next length */
@@ -839,13 +843,20 @@ static void *worker(void *arg)
                 if (!odom_next(digs, L, g_cfg->cslen))
                     break; /* wrapped: end of this span's keyspace */
                 done = idx - lo + 1;
+                /* publish progress often: a span can cover billions of
+                 * candidates, so waiting for the span to finish would leave
+                 * the progress line frozen at zero */
+                if ((done & (HM_PROGRESS_FLUSH - 1)) == 0) {
+                    atomic_fetch_add(&g_done_len[L], HM_PROGRESS_FLUSH);
+                    flushed += HM_PROGRESS_FLUSH;
+                }
             }
-            atomic_fetch_add(&g_done_len[L], hi - lo);
+            atomic_fetch_add(&g_done_len[L], (hi - lo) - flushed);
             continue;
 
 stop_span:
             done = idx - lo;
-            atomic_fetch_add(&g_done_len[L], done);
+            atomic_fetch_add(&g_done_len[L], done - flushed);
             if (idx < hi)
                 record_stop_tail(me, L, lo, hi, done);
             goto worker_exit;
@@ -1055,7 +1066,6 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
     static const hm_longopt_t lopts[] = {
         { "hash", 1, 'H' },
         { "hash-file", 1, 'F' },
-        { "file", 1, 'F' },
         { "charset", 1, 'c' },
         { "min", 1, 1 },
         { "max", 1, 2 },
@@ -1082,7 +1092,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
     cfg->ntargets = 0;
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:F:f:c:t:s:p:o:h", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:c:t:s:p:o:h", lopts)) != -1) {
         switch (opt) {
         case 'H':
             if (!want_targets) {
@@ -1098,7 +1108,6 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             cfg->ntargets++;
             break;
         case 'F':
-        case 'f': /* -F/--hash-file and -f/--file: same thing here */
             if (!want_targets) {
                 fprintf(stderr,
                         "[-] -F/--hash-file is not valid in this mode\n");

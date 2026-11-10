@@ -160,7 +160,7 @@ jobs:
             elapsed="$(grep -oE 'in [0-9.]+s' "$log" | tail -1 \
                       | grep -oE '[0-9.]+' || true)"
             rate="$(grep -oE '\([0-9.]+ [kMG]?H/s avg\)' "$log" | tail -1 \
-                   | tr -d '()' || true)"
+                   | tr -d '()' | sed 's/ avg$//' || true)"
             progress="$(grep -E '^\[\*\] len ' "$log" | tail -1 || true)"
           fi
           echo "tried=${tried:-0}" >> "$GITHUB_OUTPUT"
