@@ -170,6 +170,27 @@ jobs:
           echo "found=$found" >> "$GITHUB_OUTPUT"
           echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
 
+      - name: Restore the brute force state
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          # continue where the previous run stopped
+          prev="$(gh run list --workflow lookup.yml --status completed \
+                   --limit 1 --json databaseId \
+                   --jq '.[0].databaseId // empty' || true)"
+          if [ -n "$prev" ]; then
+            mkdir -p "$FARM_DIR/prev"
+            gh run download "$prev" -n lookup-results -D "$FARM_DIR/prev" \
+                2>/dev/null || true
+            if [ -s "$FARM_DIR/prev/brute.state" ]; then
+              cp "$FARM_DIR/prev/brute.state" "$FARM_DIR/brute.state"
+              echo "restored the state of run $prev"
+            fi
+          fi
+
       - name: Stage 3 - brute force fallback
         id: stage_brute
         if: steps.stage_wordlist.outputs.remaining != '0'
@@ -181,13 +202,22 @@ jobs:
           if [ -n "${{ inputs.salt }}" ]; then
             saltargs="-s ${{ inputs.salt }} -p ${{ inputs.saltpos }}"
           fi
+          run_brute() {
+            local stateargs="$1"
+            timeout -s TERM "${{ inputs.brute_minutes }}m" \
+              ./hashmap brute -F "$FARM_DIR/hashes.txt" \
+                -c "${{ inputs.charset }}" --min "${{ inputs.min }}" \
+                --max "${{ inputs.max }}" -t "$(nproc)" \
+                $stateargs $extra $saltargs \
+                -o "$FARM_DIR/hits-brute.txt" 2>&1 | tee -a "$FARM_DIR/brute.log"
+          }
           set +e
-          timeout -s TERM "${{ inputs.brute_minutes }}m" \
-            ./hashmap brute -F "$FARM_DIR/hashes.txt" \
-              -c "${{ inputs.charset }}" --min "${{ inputs.min }}" \
-              --max "${{ inputs.max }}" -t "$(nproc)" \
-              --state "$FARM_DIR/brute.state" $extra $saltargs \
-              -o "$FARM_DIR/hits-brute.txt"
+          run_brute "--state $FARM_DIR/brute.state"
+          if grep -q "incompatible" "$FARM_DIR/brute.log" 2>/dev/null; then
+            echo "the saved state does not fit this configuration - starting fresh"
+            rm -f "$FARM_DIR/brute.state" "$FARM_DIR/brute.log"
+            run_brute ""
+          fi
           set -e
           found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
@@ -229,6 +259,8 @@ jobs:
             ${{ env.FARM_DIR }}/results.txt
             ${{ env.FARM_DIR }}/hits-*.txt
             ${{ env.FARM_DIR }}/hashes.txt
+            ${{ env.FARM_DIR }}/brute.state
+            ${{ env.FARM_DIR }}/brute.log
           if-no-files-found: ignore
           retention-days: 90
 
