@@ -107,9 +107,32 @@ jobs:
             echo "::notice::no hashes to look up"
           fi
 
-      - name: Stage 1 - the combined password list
+      - name: Stage 1 - the hashmap of the combined list
+        id: stage_map
+        if: steps.collect.outputs.total != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          if gh release download maps --pattern 'wordlist-map.hmmap' \
+                 --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "map downloaded - searching it"
+            set +e
+            ./hashmap search -F "$FARM_DIR/hashes.txt" \
+                "$FARM_DIR/wordlist-map.hmmap" -o "$FARM_DIR/hits-map.txt"
+            set -e
+          else
+            echo "no published map - skipping the map stage"
+          fi
+          found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
+
+      - name: Stage 2 - the combined password list
         id: stage_wordlist
-        if: steps.collect.outputs.total != '0' && inputs.wordlist != 'none'
+        if: steps.stage_map.outputs.remaining != '0' && inputs.wordlist != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -128,7 +151,7 @@ jobs:
           fi
           if [ -z "$wl" ] || [ ! -f "$wl" ]; then
             echo "no wordlist available - skipping the stage"
-            echo "remaining=${{ steps.collect.outputs.total }}" >> "$GITHUB_OUTPUT"
+            echo "remaining=${{ steps.stage_map.outputs.remaining }}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "wordlist: $wl ($(wc -l < "$wl" | tr -d ' ') candidates)"
@@ -147,7 +170,7 @@ jobs:
           echo "found=$found" >> "$GITHUB_OUTPUT"
           echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
 
-      - name: Stage 2 - brute force fallback
+      - name: Stage 3 - brute force fallback
         id: stage_brute
         if: steps.stage_wordlist.outputs.remaining != '0'
         run: |

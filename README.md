@@ -43,7 +43,9 @@ hashmap wordlist -H <md5hex> -w wordlists/combined.txt
 ```
 
 The big list is never committed — it is fetched once and kept in the cloud
-(the `wordlists` release); the workflows download it instead of rebuilding it.
+(the `wordlists` release), together with its **hashmap** (every candidate with
+its MD5 digest, `maps` release). The workflows download them instead of
+rebuilding them.
 
 Pause and continue a long run:
 

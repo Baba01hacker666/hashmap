@@ -365,6 +365,34 @@ fi
     || bad "brute --first exits 0 on one hit"
 
 # ------------------------------------------------------------------
+head_ "map from a wordlist"
+# ------------------------------------------------------------------
+printf 'password\nletmein\nabc123\n' > "$TMP/src.txt"
+"$BIN" map -o "$TMP/wl.hmmap" --wordlist "$TMP/src.txt" \
+    --state "$TMP/wl.state" >/dev/null 2>&1
+[ -s "$TMP/wl.hmmap" ] && ok "map from a wordlist is written" \
+    || bad "map from a wordlist is written"
+HWP="$(md5_of 'password')"
+out="$("$BIN" search -H "$HWP" "$TMP/wl.hmmap" 2>/dev/null)"
+[ "$out" = "$HWP:password" ] && ok "the wordlist map is searchable" \
+    || bad "the wordlist map is searchable (got=$out)"
+"$BIN" search -H "$(md5_of 'zzzmiss')" "$TMP/wl.hmmap" >/dev/null 2>&1
+[ $? -eq 1 ] && ok "the wordlist map misses unknown hashes" \
+    || bad "the wordlist map misses unknown hashes"
+
+# a wordlist map can be resumed
+rm -f "$TMP/wl2.hmmap" "$TMP/wl2.state"
+"$BIN" map -o "$TMP/wl2.hmmap" --wordlist "$TMP/src.txt" \
+    --state "$TMP/wl2.state" >/dev/null 2>&1
+[ ! -e "$TMP/wl2.state" ] && ok "the wordlist map state is removed when done" \
+    || bad "the wordlist map state is removed when done"
+
+# the wordlist source is rejected outside map mode
+"$BIN" brute -H "$HWP" --wordlist "$TMP/src.txt" >/dev/null 2>&1
+[ $? -eq 2 ] && ok "--wordlist is rejected in brute mode" \
+    || bad "--wordlist is rejected in brute mode"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0

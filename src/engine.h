@@ -44,6 +44,11 @@ typedef struct {
     /* map mode: stream of binary records (NULL = plain brute mode) */
     FILE *rec;
 
+    /* wordlist source: build the map from the lines of a wordlist file
+     * instead of a charset keyspace (map mode) */
+    const char *wlist;
+    size_t wlist_bytes; /* filled in by the engine */
+
     /* results file for found lines (or NULL) */
     FILE *outf;
 } hm_cfg_t;

@@ -46,7 +46,14 @@ Whatever the stage, the cracked pairs are written as `<hash>:<plaintext>`.
 
 ## The stages in detail
 
-### 1. the combined password list
+### 1. the hashmap
+
+```sh
+gh release download maps --pattern 'wordlist-map.hmmap' --dir .
+hashmap search -F hashes.txt wordlist-map.hmmap -o hits-map.txt
+```
+
+### 2. the combined password list
 
 ```sh
 gh release download wordlists --pattern 'combined.txt' --dir .
@@ -60,7 +67,7 @@ The `wordlist` mode hashes every candidate of the list (one thread per core,
 salted or not) and compares it against the targets — much cheaper than a
 keyspace search, and it covers passwords that contain characters no map has.
 
-### 2. brute force
+### 3. brute force
 
 ```sh
 hashmap brute -F hashes.txt -c lower+digits --min 1 --max 6 \

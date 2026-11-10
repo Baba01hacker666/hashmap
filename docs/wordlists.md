@@ -66,14 +66,38 @@ real  0m1.496s
 ~22M candidates per second on 8 cores — the full 34M list is scanned in about
 a second and a half.
 
-## The workflow
+## The hashmap of the list
 
-`wordlists.yml` builds the combined list on GitHub's runners, optionally uses
-it for a quick lookup, and attaches it to the **wordlists** release:
+The list can also be turned into a **hashmap** — every candidate with its MD5
+digest, ready to search:
 
 ```sh
-gh workflow run wordlists.yml -f profile=full -f hashes=<md5hex>
+hashmap map -o wordlist-map.hmmap --wordlist wordlists/combined.txt
+hashmap search -H <md5hex> wordlist-map.hmmap
 ```
 
-The combined list is also available in the `lookup` workflow by passing
-`-f wordlist=combined` — it then builds the list itself before trying it.
+For the combined list that is 34,008,124 entries (~880 MB), built in about
+ten seconds. The run is resumable: interrupt it and continue with the same
+state file, the finished part is kept.
+
+The map is published in the **maps** release, the lookup workflow downloads it
+and scans it — no hashing, no rebuilding.
+
+## The workflow
+
+`wordlists.yml` builds the combined list **once** and its hashmap, and
+publishes both in the cloud:
+
+| release | asset | content |
+|---------|-------|---------|
+| `wordlists` | `combined.txt` | the deduplicated list (323 MB) |
+| `maps` | `wordlist-map.hmmap` | every candidate with its MD5 digest (880 MB) |
+
+Later runs **download** what is published instead of rebuilding it:
+
+```sh
+gh workflow run wordlists.yml -f hashes=<md5hex>
+gh workflow run wordlists.yml -f rebuild=true     # force a rebuild
+```
+
+The `lookup` workflow uses the map first, then the list, then brute force.

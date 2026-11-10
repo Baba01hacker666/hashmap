@@ -1,21 +1,21 @@
 name: wordlists
 
-# The combined password list (SecLists + RockYou, deduplicated) lives in the
-# 'wordlists' release - in the cloud, not in the repository.
+# The combined password list (SecLists + RockYou, deduplicated) and its
+# hashmap live in the cloud - in the releases, not in the repository.
 #
-# This workflow does NOT rebuild it on every run: it downloads the published
-# list and uses it. Rebuilding happens only when the list is missing or when
-# 'rebuild' is requested.
+# This workflow does NOT rebuild them on every run: it downloads what is
+# already published and uses it. Building happens only when something is
+# missing or when 'rebuild' is requested.
 
 on:
   workflow_dispatch:
     inputs:
       hashes:
-        description: 'hashes to look up with the combined list (optional)'
+        description: 'hashes to look up (optional)'
         required: false
         default: ''
       rebuild:
-        description: 'rebuild the list instead of downloading the published one'
+        description: 'rebuild the list and the map instead of downloading them'
         type: boolean
         default: false
   schedule:
@@ -62,30 +62,59 @@ jobs:
             echo "::error::no combined list"; exit 1; }
           echo "built=$built" >> "$GITHUB_OUTPUT"
 
+      - name: Get the hashmap of the list
+        id: getmap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          built=false
+          if [ "${{ inputs.rebuild }}" = "true" ]; then
+            echo "rebuild requested"
+          elif gh release download maps --pattern 'wordlist-map.hmmap' \
+                 --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "downloaded the published map"
+          else
+            echo "no published map - building it from the list (once)"
+            ./hashmap map -o "$FARM_DIR/wordlist-map.hmmap" \
+                --wordlist "$FARM_DIR/combined.txt" \
+                --state "$FARM_DIR/map.state" -t "$(nproc)"
+            built=true
+          fi
+          [ -s "$FARM_DIR/wordlist-map.hmmap" ] || {
+            echo "::error::no map"; exit 1; }
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+
       - name: Statistics
         id: stats
         run: |
           set -eu
           f="$FARM_DIR/combined.txt"
+          m="$FARM_DIR/wordlist-map.hmmap"
           lines=$(wc -l < "$f" | tr -d ' ')
           size=$(du -h "$f" | cut -f1)
+          msize=$(du -h "$m" | cut -f1)
           sha=$(sha256sum "$f" | cut -d' ' -f1)
+          msha=$(sha256sum "$m" | cut -d' ' -f1)
           echo "$sha  combined.txt" > "$FARM_DIR/SHA256SUMS"
+          echo "$msha  wordlist-map.hmmap" >> "$FARM_DIR/SHA256SUMS"
           echo "lines=$lines" >> "$GITHUB_OUTPUT"
           echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "msize=$msize" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           {
             echo
-            echo '### combined wordlist'
+            echo '### wordlists'
             echo ''
-            echo "| metric | value |"
-            echo "|--------|-------|"
-            echo "| candidates | $lines |"
-            echo "| size | $size |"
-            echo "| sha256 | \`$sha\` |"
+            echo "| artifact | metric | value |"
+            echo "|----------|--------|-------|"
+            echo "| combined.txt | candidates | $lines |"
+            echo "| combined.txt | size | $size |"
+            echo "| wordlist-map.hmmap | size | $msize |"
+            echo "| wordlist-map.hmmap | sha256 | \`$msha\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Quick lookup with the combined list
+      - name: Quick lookup with the map
         if: inputs.hashes != ''
         run: |
           set -eu
@@ -94,11 +123,10 @@ jobs:
               | grep -Eo '[0-9a-fA-F]{32}' | tr 'A-F' 'a-f' \
               | sort -u > "$FARM_DIR/hashes.txt" || true
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
-          echo "looking up $total hash(es) in ${{ steps.stats.outputs.lines }} candidates"
+          echo "looking up $total hash(es)"
           set +e
-          ./hashmap wordlist -F "$FARM_DIR/hashes.txt" \
-              -w "$FARM_DIR/combined.txt" -t "$(nproc)" \
-              -o "$FARM_DIR/results.txt"
+          ./hashmap search -F "$FARM_DIR/hashes.txt" \
+              "$FARM_DIR/wordlist-map.hmmap" -o "$FARM_DIR/results.txt"
           set -e
           if [ -s "$FARM_DIR/results.txt" ]; then
             echo "cracked:"
@@ -124,6 +152,28 @@ jobs:
           path: ${{ env.FARM_DIR }}/results.txt
           if-no-files-found: ignore
           retention-days: 90
+
+      - name: Publish the map (only when it was rebuilt)
+        if: steps.getmap.outputs.built == 'true' || inputs.rebuild == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: maps
+          name: hashmap maps
+          body: |
+            The hashmap of the combined password list: every candidate with
+            its MD5 digest, ready to search. MD5 only.
+
+            | metric | value |
+            |--------|-------|
+            | candidates | ${{ steps.stats.outputs.lines }} |
+            | size | ${{ steps.stats.outputs.msize }} |
+
+            ```sh
+            hashmap search -H <md5hex> wordlist-map.hmmap
+            ```
+          files: |
+            ${{ env.FARM_DIR }}/wordlist-map.hmmap
+          fail_on_unmatched_files: false
 
       - name: Publish the list (only when it was rebuilt)
         if: steps.get.outputs.built == 'true' || inputs.rebuild == 'true'

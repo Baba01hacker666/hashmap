@@ -60,6 +60,13 @@ typedef struct {
     int n;
 } hm_spans_t;
 
+typedef struct {
+    uint32_t base[4]; /* midstate (or MD5 init when unsalted) */
+    uint8_t blk[64];  /* final block template               */
+    int cand_off;     /* offset of candidate chars in blk   */
+    bool fast;
+} lenctx_t;
+
 /* engine-owned shared state */
 static const hm_cfg_t *g_cfg;
 static hm_queue_t g_q[HM_MAX_PWLEN + 1];
@@ -72,6 +79,14 @@ static hm_wslot_t *g_w;
 static pthread_mutex_t g_found_mtx = PTHREAD_MUTEX_INITIALIZER;
 static char *g_found_mask;
 static bool g_resumed;
+
+/* wordlist source: the candidates come from a file instead of a charset
+ * keyspace. The span ordinals are line numbers in that file. */
+static bool g_wmode;
+static char *g_wdata;
+static size_t *g_woffs;
+static size_t g_wnlines;
+static lenctx_t g_wctx[HM_MAX_PWLEN + 1];
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */
@@ -173,13 +188,6 @@ int hm_load_targets(const char *path, hm_target_t *targets, int *nt)
 /* ------------------------------------------------------------------ */
 /* lenctx (md5 midstate fast path)                                     */
 /* ------------------------------------------------------------------ */
-
-typedef struct {
-    uint32_t base[4]; /* midstate (or MD5 init when unsalted) */
-    uint8_t blk[64];  /* final block template               */
-    int cand_off;     /* offset of candidate chars in blk   */
-    bool fast;
-} lenctx_t;
 
 /* Build the per-length md5 context.
  *
@@ -349,7 +357,10 @@ static void snapshot_spans(hm_spans_t *snaps)
         snaps[L].n = 0;
     }
 
-    for (int L = g_cfg->minlen; L <= g_cfg->maxlen; L++) {
+    int lfrom = g_wmode ? 0 : g_cfg->minlen;
+    int lto = g_wmode ? 0 : g_cfg->maxlen;
+
+    for (int L = lfrom; L <= lto; L++) {
         hm_queue_t *q = &g_q[L];
         int span_at = atomic_load(&q->span_at);
         int rem = q->n - span_at;
@@ -378,8 +389,12 @@ static void snapshot_spans(hm_spans_t *snaps)
         cur_hi = atomic_load(&g_w[t].cur_hi);
         pos = atomic_load(&g_w[t].span_pos);
         L = (int)atomic_load(&g_w[t].cur_len);
-        if (L < g_cfg->minlen || L > g_cfg->maxlen)
+        if (g_wmode) {
+            if (L != 0)
+                continue;
+        } else if (L < g_cfg->minlen || L > g_cfg->maxlen) {
             continue;
+        }
         if (cur_lo + pos >= cur_hi)
             continue; /* tail already finished */
         if (snaps[L].v == NULL)
@@ -430,15 +445,25 @@ static int state_write(void)
     if (fprintf(f,
                 "%s\nmode %s\ncs %s\nmin %d\nmax %d\nsalt %s\npos %s\n"
                 "targets %d\n",
-                HM_STATE_MAGIC, (g_cfg->rec != NULL) ? "map" : "brute", cshex,
-                g_cfg->minlen, g_cfg->maxlen, salthex,
+                HM_STATE_MAGIC,
+                g_wmode ? "mapw" : ((g_cfg->rec != NULL) ? "map" : "brute"),
+                cshex, g_cfg->minlen, g_cfg->maxlen, salthex,
                 g_cfg->salt_pre ? "pre" : "post", g_cfg->ntargets) < 0)
         failed = 1;
+    if (!failed && g_wmode) {
+        /* the wordlist identity: line count + byte size */
+        if (fprintf(f, "wlines %zu\nwbytes %zu\n", g_wnlines,
+                    g_cfg->wlist_bytes) < 0)
+            failed = 1;
+    }
     if (!failed) {
         for (int i = 0; i < g_cfg->ntargets && !failed; i++)
             if (fprintf(f, "%s\n", g_cfg->targets[i].hex) < 0)
                 failed = 1;
-        for (int L = g_cfg->minlen; L <= g_cfg->maxlen && !failed; L++) {
+        int lfrom = g_wmode ? 0 : g_cfg->minlen;
+        int lto = g_wmode ? 0 : g_cfg->maxlen;
+
+        for (int L = lfrom; L <= lto && !failed; L++) {
             if (fprintf(f, "len %d spans %d\n", L, snaps[L].n) < 0) {
                 failed = 1;
                 break;
@@ -481,7 +506,8 @@ static int state_load(void)
 {
     FILE *f;
     char line[512];
-    const char *want_mode = (g_cfg->rec != NULL) ? "map" : "brute";
+    const char *want_mode = g_wmode ? "mapw"
+                                     : ((g_cfg->rec != NULL) ? "map" : "brute");
     char cshex_mine[2 * HM_MAX_CS + 1];
     char salthex_mine[2 * HM_MAX_SALT + 1];
     bool have_magic = false;
@@ -553,6 +579,18 @@ static int state_load(void)
             } else if (strncmp(line, "pos ", 4) == 0) {
                 if (strcmp(line + 4, g_cfg->salt_pre ? "pre" : "post") != 0)
                     ok = false;
+            } else if (strncmp(line, "wlines ", 7) == 0) {
+                size_t wl;
+
+                if (!g_wmode || sscanf(line + 7, "%zu", &wl) != 1 ||
+                    wl != g_wnlines)
+                    ok = false;
+            } else if (strncmp(line, "wbytes ", 7) == 0) {
+                size_t wb;
+
+                if (!g_wmode || sscanf(line + 7, "%zu", &wb) != 1 ||
+                    wb != g_cfg->wlist_bytes)
+                    ok = false;
             } else if (strncmp(line, "targets ", 8) == 0) {
                 if (sscanf(line + 8, "%d", &ntargets) != 1 ||
                     ntargets != g_cfg->ntargets) {
@@ -587,14 +625,25 @@ static int state_load(void)
             int n_spans;
 
             if (sscanf(line, "len %d spans %d", &len_hdr, &n_spans) == 2) {
+                if (g_wmode && len_hdr != 0)
+                    ok = false;
                 if (cur_span != NULL) { /* previous section unfinished */
                     fprintf(stderr,
                             "[-] state span section truncated (use --fresh)\n");
                     ok = false;
                     break;
                 }
-                if (len_hdr < g_cfg->minlen || len_hdr > g_cfg->maxlen ||
-                    n_spans < 0 || n_spans > HM_MAX_SPANS_IN_STATE) {
+                if (g_wmode) {
+                    if (len_hdr != 0) {
+                        ok = false;
+                        break;
+                    }
+                } else if (len_hdr < g_cfg->minlen ||
+                           len_hdr > g_cfg->maxlen) {
+                    ok = false;
+                    break;
+                }
+                if (n_spans < 0 || n_spans > HM_MAX_SPANS_IN_STATE) {
                     ok = false;
                     break;
                 }
@@ -686,6 +735,37 @@ static int state_load(void)
 /* fresh-span any length the state did not mention */
 static int queues_complete(void)
 {
+    if (g_wmode) {
+        /* the candidates are the lines of the wordlist: one span per block
+         * of lines, so an interrupted run resumes on a fine granularity */
+        const uint64_t chunk = 16384;
+        uint64_t n = g_wnlines;
+        uint64_t ns = (n + chunk - 1) / chunk;
+        hm_span_t *v;
+
+        if (g_q[0].v != NULL)
+            return 0; /* the state file already knows the remaining spans */
+        if (ns == 0)
+            ns = 1;
+        v = calloc((size_t)ns, sizeof(hm_span_t));
+        if (v == NULL) {
+            fprintf(stderr, "[-] out of memory (wordlist spans)\n");
+            return -1;
+        }
+        for (uint64_t i = 0; i < ns; i++) {
+            v[i].lo = i * chunk;
+            v[i].hi = (i + 1) * chunk;
+            if (v[i].hi > n)
+                v[i].hi = n;
+        }
+        g_q[0].len = 0;
+        g_q[0].v = v;
+        g_q[0].n = (int)ns;
+        atomic_store(&g_q[0].span_at, 0);
+        g_q_known[0] = true;
+        return 0;
+    }
+
     for (int L = g_cfg->minlen; L <= g_cfg->maxlen; L++) {
         bool ovf;
         uint64_t space = engine_pow(g_cfg->cslen, L, &ovf);
@@ -704,6 +784,143 @@ static int queues_complete(void)
         }
     }
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* wordlist source (map from a wordlist instead of a charset keyspace) */
+/* ------------------------------------------------------------------ */
+
+/* load the wordlist and index its lines; the span ordinals are line numbers */
+static int wlist_load(const char *path, size_t *bytes_out)
+{
+    FILE *f = fopen(path, "rb");
+    long sz;
+    char *buf;
+    size_t nlines = 1;
+    size_t *offs;
+    size_t k = 0;
+
+    if (f == NULL) {
+        fprintf(stderr, "[-] cannot open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        fprintf(stderr, "[-] cannot seek %s\n", path);
+        return -1;
+    }
+    sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        fprintf(stderr, "[-] cannot size %s\n", path);
+        return -1;
+    }
+    rewind(f);
+    buf = malloc((size_t)sz + 1);
+    if (buf == NULL) {
+        fclose(f);
+        fprintf(stderr, "[-] out of memory (wordlist)\n");
+        return -1;
+    }
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        fprintf(stderr, "[-] cannot read %s\n", path);
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    buf[sz] = '\0';
+
+    for (long i = 0; i < sz; i++) {
+        if (buf[i] == '\n')
+            nlines++;
+    }
+    offs = malloc((nlines + 1) * sizeof(size_t));
+    if (offs == NULL) {
+        fprintf(stderr, "[-] out of memory (wordlist index)\n");
+        free(buf);
+        return -1;
+    }
+    offs[k++] = 0;
+    for (long i = 0; i < sz; i++) {
+        if (buf[i] == '\n')
+            offs[k++] = (size_t)i + 1;
+    }
+    offs[k] = (size_t)sz;
+
+    g_wdata = buf;
+    g_woffs = offs;
+    g_wnlines = nlines;
+    *bytes_out = (size_t)sz;
+    return 0;
+}
+
+static void wlist_free(void)
+{
+    free(g_wdata);
+    free(g_woffs);
+    g_wdata = NULL;
+    g_woffs = NULL;
+    g_wnlines = 0;
+}
+
+/* digest of a raw wordlist candidate (the charset fast path does not apply:
+ * the candidate bytes come from the file, not from a charset) */
+static void wlist_digest(size_t len, const char *line, uint8_t out[16])
+{
+    int pre_len = g_cfg->salt_pre ? g_cfg->salt_len : 0;
+    int post_len = g_cfg->salt_pre ? 0 : g_cfg->salt_len;
+
+    if (len >= 1 && len <= (size_t)HM_MAX_PWLEN && g_wctx[len].fast) {
+        const lenctx_t *ctx = &g_wctx[len];
+        uint32_t st[4];
+        uint8_t blk[64];
+
+        memcpy(st, ctx->base, sizeof(st));
+        memcpy(blk, ctx->blk, sizeof(blk));
+        memcpy(blk + ctx->cand_off, line, len);
+        hm_md5_transform(st, blk);
+        for (int i = 0; i < 4; i++) {
+            out[4 * i] = (uint8_t)(st[i]);
+            out[4 * i + 1] = (uint8_t)(st[i] >> 8);
+            out[4 * i + 2] = (uint8_t)(st[i] >> 16);
+            out[4 * i + 3] = (uint8_t)(st[i] >> 24);
+        }
+        return;
+    }
+
+    {
+        uint8_t buf[HM_MAX_SALT * 2 + HM_MAX_PWLEN + 16];
+        size_t n = 0;
+
+        if (pre_len > 0) {
+            memcpy(buf, g_cfg->salt, (size_t)pre_len);
+            n = (size_t)pre_len;
+        }
+        if (n + len > sizeof(buf))
+            len = sizeof(buf) - n;
+        memcpy(buf + n, line, len);
+        n += len;
+        if (post_len > 0 && n + (size_t)post_len <= sizeof(buf)) {
+            memcpy(buf + n, g_cfg->salt, (size_t)post_len);
+            n += (size_t)post_len;
+        }
+        hm_md5(buf, n, out);
+    }
+}
+
+/* the candidate text of line i (without the line ending) */
+static size_t wlist_line(size_t i, const char **out)
+{
+    size_t off = g_woffs[i];
+    size_t eol = g_woffs[i + 1];
+    size_t len;
+
+    while (eol > off && (g_wdata[eol - 1] == '\n' || g_wdata[eol - 1] == '\r'))
+        eol--;
+    len = eol - off;
+    *out = g_wdata + off;
+    return len;
 }
 
 /* ------------------------------------------------------------------ */
@@ -785,14 +1002,20 @@ static void *worker(void *arg)
     atomic_store(&me->cur_valid, 0);
     atomic_store(&me->exited, 0);
 
-    for (int L = g_cfg->minlen; L <= g_cfg->maxlen; L++) {
+    int lfrom = g_wmode ? 0 : g_cfg->minlen;
+    int lto = g_wmode ? 0 : g_cfg->maxlen;
+
+    for (int L = lfrom; L <= lto; L++) {
         hm_queue_t *q = &g_q[L];
         lenctx_t ctx;
         bool ovf;
         uint64_t space = engine_pow(g_cfg->cslen, L, &ovf);
 
-        if (ovf || space == 0)
+        if (g_wmode) {
+            space = g_wnlines; /* the candidates are the wordlist lines */
+        } else if (ovf || space == 0) {
             continue;
+        }
         lenctx_build(&ctx, L, g_cfg->salt, g_cfg->salt_len, pre);
         atomic_store(&g_show_len, L);
 
@@ -816,12 +1039,40 @@ static void *worker(void *arg)
                 memcpy(plain + pre_len + L, g_cfg->salt, (size_t)post_len);
 
             idx = lo;
+            if (g_wmode)
+                idx_to_digits(0, digs, 0, 1); /* unused in wordlist mode */
             for (; idx < hi; idx++) {
+                const char *line = NULL;
+                size_t linelen = 0;
+
                 if (atomic_load(&hm_stop) != 0)
                     goto stop_span;
-                md5_candidate(&ctx, cs, L, digs, dg, g_cfg->salt,
-                              g_cfg->salt_len, pre);
-                if (g_cfg->rec != NULL) {
+                if (g_wmode) {
+                    linelen = wlist_line((size_t)idx, &line);
+                    if (linelen == 0)
+                        continue;
+                    wlist_digest(linelen, line, dg);
+                } else {
+                    md5_candidate(&ctx, cs, L, digs, dg, g_cfg->salt,
+                                  g_cfg->salt_len, pre);
+                }
+                if (g_wmode) {
+                    /* the map record holds the wordlist candidate */
+                    uint8_t rec[HM_MAX_PLAIN + 17];
+                    size_t plen = linelen;
+
+                    if (plen > HM_MAX_PLAIN)
+                        plen = HM_MAX_PLAIN;
+                    memcpy(rec, dg, 16);
+                    rec[16] = (uint8_t)plen;
+                    memcpy(rec + 17, line, plen);
+                    if (fwrite(rec, 1, (size_t)(17 + plen), g_cfg->rec) !=
+                        (size_t)(17 + plen)) {
+                        fprintf(stderr, "[-] map stream write failed: %s\n",
+                                strerror(errno));
+                        exit(1);
+                    }
+                } else if (g_cfg->rec != NULL) {
                     int plen = pre_len + L + post_len;
 
                     for (int kk = 0; kk < L; kk++)
@@ -842,7 +1093,7 @@ static void *worker(void *arg)
                             goto stop_span;
                     }
                 }
-                if (!odom_next(digs, L, g_cfg->cslen))
+                if (!g_wmode && !odom_next(digs, L, g_cfg->cslen))
                     break; /* wrapped: end of this span's keyspace */
                 done = idx - lo + 1;
                 /* publish progress often: a span can cover billions of
@@ -903,8 +1154,12 @@ static void engine_progress_tick(uint64_t total_space, double t0)
     if (pct > 100.0)
         pct = 100.0;
     remain = (rate > 0.0) ? (double)(total_space - done) / rate : 0.0;
-    printf("\r[*] len %d  %s tried  %.1f%%  %s  eta %.0fs   ",
-           atomic_load(&g_show_len), cbuf, pct, rbuf, remain);
+    if (g_wmode)
+        printf("\r[*] wordlist  %s tried  %.1f%%  %s  eta %.0fs   ", cbuf, pct,
+               rbuf, remain);
+    else
+        printf("\r[*] len %d  %s tried  %.1f%%  %s  eta %.0fs   ",
+               atomic_load(&g_show_len), cbuf, pct, rbuf, remain);
     fflush(stdout);
 }
 
@@ -934,16 +1189,30 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
         return -1;
     }
 
-    for (int L = cfg->minlen; L <= cfg->maxlen; L++) {
-        uint64_t sp = engine_pow(cfg->cslen, L, &ovf);
-
-        if (ovf || sp > UINT64_MAX - total_space) {
-            fprintf(stderr, "[-] keyspace overflow, lower --max\n");
+    /* wordlist source: the candidates are the lines of a file */
+    g_wmode = (cfg->wlist != NULL && cfg->wlist[0] != '\0');
+    if (g_wmode) {
+        if (wlist_load(cfg->wlist, &cfg->wlist_bytes) < 0) {
             free(g_found_mask);
             free(g_w);
             return -1;
         }
-        total_space += sp;
+        for (int L = 1; L <= HM_MAX_PWLEN; L++)
+            lenctx_build(&g_wctx[L], L, cfg->salt, cfg->salt_len,
+                         cfg->salt_pre != 0);
+        total_space = g_wnlines;
+    } else {
+        for (int L = cfg->minlen; L <= cfg->maxlen; L++) {
+            uint64_t sp = engine_pow(cfg->cslen, L, &ovf);
+
+            if (ovf || sp > UINT64_MAX - total_space) {
+                fprintf(stderr, "[-] keyspace overflow, lower --max\n");
+                free(g_found_mask);
+                free(g_w);
+                return -1;
+            }
+            total_space += sp;
+        }
     }
     if (total_space == 0) {
         fprintf(stderr, "[-] empty keyspace\n");
@@ -953,27 +1222,33 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     }
 
     if (state_load() < 0) {
+        wlist_free();
         free(g_found_mask);
         free(g_w);
         return -1;
     }
     if (queues_complete() < 0) {
         queues_free_all();
+        wlist_free();
         free(g_found_mask);
         free(g_w);
         return -1;
     }
 
     printf("[*] hashmap v%s - %s mode%s\n", HM_VERSION,
-           (cfg->rec != NULL) ? "map" : "brute",
+           g_wmode ? "map/wordlist" : ((cfg->rec != NULL) ? "map" : "brute"),
            g_resumed ? " (resumed from state)" : "");
-    printf("[*] charset: (%d chars)%s%s%s\n", cfg->cslen,
-           cfg->cslen <= 64 ? " [" : "", cfg->cslen <= 64 ? cfg->cs : "",
-           cfg->cslen <= 64 ? "]" : "");
     char kbuf[32];
     hm_fmt_u64(total_space, kbuf, sizeof(kbuf));
-    printf("[*] length: %d-%d  keyspace: %s\n", cfg->minlen, cfg->maxlen,
-           kbuf);
+    if (g_wmode) {
+        printf("[*] wordlist: %s (%s candidates)\n", cfg->wlist, kbuf);
+    } else {
+        printf("[*] charset: (%d chars)%s%s%s\n", cfg->cslen,
+               cfg->cslen <= 64 ? " [" : "", cfg->cslen <= 64 ? cfg->cs : "",
+               cfg->cslen <= 64 ? "]" : "");
+        printf("[*] length: %d-%d  keyspace: %s\n", cfg->minlen, cfg->maxlen,
+               kbuf);
+    }
     printf("[*] threads: %d  salt: %s (%s)\n", cfg->nthreads,
            cfg->salt_len ? cfg->salt : "(none)",
            cfg->salt_len ? (cfg->salt_pre ? "pre" : "post") : "-");
@@ -1053,6 +1328,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     }
 
     queues_free_all();
+    wlist_free();
     free(tids);
     free(g_found_mask);
     free(g_w);
@@ -1078,6 +1354,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "state", 1, 3 },
         { "fresh", 0, 4 },
         { "first", 0, 5 },
+        { "wordlist", 1, 6 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -1178,6 +1455,14 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             break;
         case 3: /* state */
             snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", hm_optarg);
+            break;
+        case 6: /* wordlist: the map source is a wordlist file */
+            if (want_targets) {
+                fprintf(stderr,
+                        "[-] --wordlist is only valid in map mode\n");
+                return -1;
+            }
+            cfg->wlist = hm_optarg;
             break;
         case 5: /* first: stop at the first hit */
             cfg->stop_first = 1;

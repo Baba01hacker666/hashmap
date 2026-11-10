@@ -77,7 +77,11 @@ With `-o` the same result is appended to the file as `<hash>:<plaintext>`.
 ```sh
 hashmap map -o digs.hmmap -c digits --min 1 --max 4
 hashmap map -o digs.hmmap -c alnum --max 5 --state map.state
+hashmap map -o wordlist-map.hmmap --wordlist wordlists/combined.txt
 ```
+
+With `--wordlist` the candidates come from a wordlist file instead of a
+charset keyspace — every line becomes one map entry.
 
 Writes one record per candidate:
 
