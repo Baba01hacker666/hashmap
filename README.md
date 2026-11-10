@@ -85,6 +85,10 @@ hashmap search -f targets.txt digs.hmmap        # many at once
 Map file format: the header line `HMMAP 1`, then one record per candidate —
 `[16B MD5 digest][1B plaintext length][plaintext bytes]`.
 
+A long map run is resumable too: it keeps its state in `hashmap-map.state`
+in the current directory (override with `--state <file>`), so an interrupted
+map can be continued without losing work.
+
 ## Resume / continue (state files)
 
 Long keyspaces do not fit into one session. `hashmap` saves its exact position
