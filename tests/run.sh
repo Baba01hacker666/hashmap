@@ -387,6 +387,15 @@ rm -f "$TMP/wl2.hmmap" "$TMP/wl2.state"
 [ ! -e "$TMP/wl2.state" ] && ok "the wordlist map state is removed when done" \
     || bad "the wordlist map state is removed when done"
 
+# long candidates must not corrupt the map (the search has to accept them)
+LONG="$(printf 'x%.0s' $(seq 1 90))"
+printf 'short\n%s\n' "$LONG" > "$TMP/long.txt"
+"$BIN" map -o "$TMP/long.hmmap" --wordlist "$TMP/long.txt" >/dev/null 2>&1
+HL="$(printf '%s' "$LONG" | md5sum | cut -d' ' -f1)"
+out="$("$BIN" search -H "$HL" "$TMP/long.hmmap" 2>/dev/null)"
+[ "$out" = "$HL:$LONG" ] && ok "the wordlist map handles long candidates" \
+    || bad "the wordlist map handles long candidates (got=$out)"
+
 # the wordlist source is rejected outside map mode
 "$BIN" brute -H "$HWP" --wordlist "$TMP/src.txt" >/dev/null 2>&1
 [ $? -eq 2 ] && ok "--wordlist is rejected in brute mode" \

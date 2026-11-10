@@ -149,7 +149,7 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
             return -1;
         }
         int plen = rec[16];
-        if (plen < 1 || plen > HM_MAX_PWLEN + HM_MAX_SALT + 1) {
+        if (plen < 1 || plen > HM_MAX_PLAIN) {
             fprintf(stderr, "[-] bad record length in %s (corrupt map?)\n",
                     path);
             fclose(f);

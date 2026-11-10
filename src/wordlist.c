@@ -99,7 +99,7 @@ static void *wl_worker(void *arg)
             len = eol - off;
             if (len == 0)
                 continue;
-            if (len > HM_MAX_PLAIN - 1)
+            if (len > HM_MAX_PLAIN)
                 continue;
             wl_hash(g_wl.data + off, len, dg);
 

@@ -850,7 +850,8 @@ static int wlist_load(const char *path, size_t *bytes_out)
         if (buf[i] == '\n')
             offs[k++] = (size_t)i + 1;
     }
-    offs[k] = (size_t)sz;
+    if (k < nlines + 1)
+        offs[k++] = (size_t)sz; /* the last line has no newline */
 
     g_wdata = buf;
     g_woffs = offs;
@@ -1066,7 +1067,7 @@ static void *worker(void *arg)
                     size_t plen = linelen;
 
                     if (plen > HM_MAX_PLAIN)
-                        plen = HM_MAX_PLAIN;
+                        continue; /* too long for a record: skip it */
                     memcpy(rec, dg, 16);
                     rec[16] = (uint8_t)plen;
                     memcpy(rec + 17, line, plen);
