@@ -94,10 +94,15 @@ be continued without losing the records already written.
 ```sh
 hashmap search -H 202cb962ac59075b964b07152d234b70 digs.hmmap
 hashmap search -F targets.txt digs.hmmap
+hashmap search -H <md5hex> *.hmmap            # several shards
+hashmap search -H <md5hex> /path/to/maps/     # every *.hmmap in a directory
 ```
 
 Prints `<hash>:<plaintext>` for every hash found in the map. Exit code `1` if
-some hash was not found.
+some hash was not found. Scanning stops as soon as all requested hashes were
+found, so a directory of shards is cheap when the answer is in an early one.
+
+See [maps.md](maps.md) for the ready-to-download maps.
 
 ## Charsets
 

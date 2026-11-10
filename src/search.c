@@ -1,13 +1,17 @@
-/* hashmap - search mode: look up digests in a map file produced by 'map'
+/* hashmap - search mode: look up digests in map files produced by 'map'
+ *
+ * Accepts several map files (shards) and/or a directory of *.hmmap files.
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
 #include "compat.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "crypto.h"
 #include "engine.h"
@@ -23,6 +27,157 @@ typedef struct {
     int found;
 } want_t;
 
+typedef struct {
+    char **v;
+    int n;
+    int cap;
+} strlist_t;
+
+static void sl_add(strlist_t *l, const char *s)
+{
+    if (l->n >= l->cap)
+        return;
+    l->v[l->n++] = strdup(s);
+}
+
+static void sl_free(strlist_t *l)
+{
+    for (int i = 0; i < l->n; i++)
+        free(l->v[i]);
+    free(l->v);
+    memset(l, 0, sizeof(*l));
+}
+
+/* collect the *.hmmap files of a directory (sorted) */
+static int sl_add_dir(strlist_t *l, const char *dir)
+{
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    char **names = NULL;
+    int n = 0;
+    int cap = 0;
+
+    if (d == NULL) {
+        fprintf(stderr, "[-] cannot open directory %s: %s\n", dir,
+                strerror(errno));
+        return -1;
+    }
+    while ((e = readdir(d)) != NULL) {
+        size_t len = strlen(e->d_name);
+
+        if (len < 6 || strcmp(e->d_name + len - 6, ".hmmap") != 0)
+            continue;
+        if (n >= cap) {
+            int ncap = (cap == 0) ? 16 : cap * 2;
+            char **tmp = realloc(names, (size_t)ncap * sizeof(char *));
+
+            if (tmp == NULL) {
+                closedir(d);
+                return -1;
+            }
+            names = tmp;
+            cap = ncap;
+        }
+        names[n] = strdup(e->d_name);
+        if (names[n] == NULL) {
+            closedir(d);
+            return -1;
+        }
+        n++;
+    }
+    closedir(d);
+
+    /* simple insertion sort - the file count is small */
+    for (int i = 1; i < n; i++) {
+        char *key = names[i];
+        int j = i - 1;
+
+        while (j >= 0 && strcmp(names[j], key) > 0) {
+            names[j + 1] = names[j];
+            j--;
+        }
+        names[j + 1] = key;
+    }
+    for (int i = 0; i < n; i++) {
+        char path[HM_MAX_STATE_PATH * 2];
+        size_t dl = strlen(dir);
+        size_t nl = strlen(names[i]);
+        size_t sep = (dl > 0 && dir[dl - 1] == '/') ? 0 : 1;
+
+        if (dl + sep + nl + 1 >= sizeof(path)) {
+            free(names[i]);
+            continue;
+        }
+        memcpy(path, dir, dl);
+        if (sep)
+            path[dl] = '/';
+        memcpy(path + dl + sep, names[i], nl + 1);
+        sl_add(l, path);
+        free(names[i]);
+    }
+    free(names);
+    return 0;
+}
+
+/* scan one map file for the wanted hashes */
+static int scan_map(const char *path, want_t *wants, int nwants)
+{
+    FILE *f = fopen(path, "rb");
+    char magic[HM_MAP_MAGIC_LEN];
+
+    if (f == NULL) {
+        fprintf(stderr, "[-] cannot open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    if (fread(magic, 1, HM_MAP_MAGIC_LEN, f) != HM_MAP_MAGIC_LEN ||
+        memcmp(magic, HM_MAP_MAGIC, HM_MAP_MAGIC_LEN) != 0) {
+        fprintf(stderr, "[-] %s is not a hashmap map file (missing HMMAP 1 "
+                        "header)\n", path);
+        fclose(f);
+        return -1;
+    }
+
+    for (;;) {
+        uint8_t rec[17];
+        size_t got = fread(rec, 1, 17, f);
+
+        if (got == 0)
+            break; /* clean EOF */
+        if (got != 17) {
+            fprintf(stderr, "[-] truncated map record in %s\n", path);
+            fclose(f);
+            return -1;
+        }
+        int plen = rec[16];
+        if (plen < 1 || plen > HM_MAX_PWLEN + HM_MAX_SALT + 1) {
+            fprintf(stderr, "[-] bad record length in %s (corrupt map?)\n",
+                    path);
+            fclose(f);
+            return -1;
+        }
+        char plain[HM_MAX_PLAIN + 1];
+
+        if (fread(plain, 1, (size_t)plen, f) != (size_t)plen) {
+            fprintf(stderr, "[-] truncated map record in %s\n", path);
+            fclose(f);
+            return -1;
+        }
+        plain[plen] = '\0';
+
+        for (int i = 0; i < nwants; i++) {
+            if (wants[i].found)
+                continue;
+            if (memcmp(wants[i].bytes, rec, 16) == 0) {
+                printf("%s:%s\n", wants[i].hex, plain);
+                wants[i].found = 1;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
 int hm_mode_search(int argc, char **argv)
 {
     static const hm_longopt_t lopts[] = {
@@ -31,16 +186,19 @@ int hm_mode_search(int argc, char **argv)
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
-    const char *mapfile = NULL;
     want_t *wants = NULL;
+    strlist_t maps = { NULL, 0, 0 };
     int nwants = 0;
     int opt;
     int rc = 2;
-    FILE *f = NULL;
 
     wants = malloc(sizeof(want_t) * (size_t)HM_MAX_TARGETS);
-    if (wants == NULL) {
+    maps.v = malloc(sizeof(char *) * (size_t)HM_MAX_TARGETS);
+    maps.cap = HM_MAX_TARGETS;
+    if (wants == NULL || maps.v == NULL) {
         fprintf(stderr, "[-] out of memory\n");
+        free(wants);
+        free(maps.v);
         return 1;
     }
 
@@ -91,6 +249,7 @@ int hm_mode_search(int argc, char **argv)
         case 'h':
             hm_usage_search();
             free(wants);
+            free(maps.v);
             return 0;
         default:
             fprintf(stderr, "[-] unknown option\n");
@@ -99,86 +258,62 @@ int hm_mode_search(int argc, char **argv)
         }
     }
 
-    if (hm_optind < argc)
-        mapfile = argv[hm_optind++];
-    if (mapfile == NULL || nwants < 1 || hm_optind < argc) {
+    /* the positional arguments are map files and/or directories */
+    for (int i = hm_optind; i < argc; i++) {
+        struct stat st;
+
+        if (stat(argv[i], &st) != 0) {
+            fprintf(stderr, "[-] cannot open %s: %s\n", argv[i],
+                    strerror(errno));
+            rc = 1;
+            goto out;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (sl_add_dir(&maps, argv[i]) < 0) {
+                rc = 1;
+                goto out;
+            }
+        } else {
+            sl_add(&maps, argv[i]);
+        }
+    }
+    if (maps.n == 0 || nwants < 1) {
         fprintf(stderr,
                 "[-] search needs at least one hash (-H) and a map file\n");
         hm_usage_search();
         goto out;
     }
 
-    f = fopen(mapfile, "rb");
-    if (f == NULL) {
-        fprintf(stderr, "[-] cannot open %s: %s\n", mapfile, strerror(errno));
-        rc = 1;
-        goto out;
+    for (int i = 0; i < maps.n; i++) {
+        if (scan_map(maps.v[i], wants, nwants) < 0) {
+            rc = 1;
+            goto out;
+        }
+        if (nwants > 0) {
+            int left = 0;
+
+            for (int k = 0; k < nwants; k++)
+                if (!wants[k].found)
+                    left++;
+            if (left == 0)
+                break; /* everything found, no need to scan further */
+        }
     }
 
-    /* validate optional magic header */
     {
-        char magic[HM_MAP_MAGIC_LEN];
-
-        if (fread(magic, 1, HM_MAP_MAGIC_LEN, f) != HM_MAP_MAGIC_LEN ||
-            memcmp(magic, HM_MAP_MAGIC, HM_MAP_MAGIC_LEN) != 0) {
-            fprintf(stderr,
-                    "[-] %s is not a hashmap map file (missing %s header)\n",
-                    mapfile, "HMMAP 1");
-            rc = 1;
-            goto out;
-        }
-    }
-
-    /* stream records */
-    for (;;) {
-        uint8_t rec[17];
-        size_t got = fread(rec, 1, 17, f);
-
-        if (got == 0)
-            break; /* clean EOF */
-        if (got != 17) {
-            fprintf(stderr, "[-] truncated map record in %s\n", mapfile);
-            rc = 1;
-            goto out;
-        }
-        int plen = rec[16];
-        if (plen > HM_MAX_PWLEN + HM_MAX_SALT + 1 || plen < 1) {
-            fprintf(stderr, "[-] bad record length in %s (corrupt map?)\n",
-                    mapfile);
-            rc = 1;
-            goto out;
-        }
-        char plain[HM_MAX_PLAIN + 1];
-        if (plen > 0 && fread(plain, 1, (size_t)plen, f) != (size_t)plen) {
-            fprintf(stderr, "[-] truncated map record in %s\n", mapfile);
-            rc = 1;
-            goto out;
-        }
-        plain[plen] = '\0';
+        int missing = 0;
 
         for (int i = 0; i < nwants; i++) {
-            if (wants[i].found)
-                continue;
-            if (memcmp(wants[i].bytes, rec, 16) == 0) {
-                printf("%s:%s\n", wants[i].hex, plain);
-                wants[i].found = 1;
-                break;
+            if (!wants[i].found) {
+                missing++;
+                fprintf(stderr, "[-] %s not found in map\n", wants[i].hex);
             }
         }
+        rc = (missing == 0) ? 0 : 1;
     }
-
-    int missing = 0;
-    for (int i = 0; i < nwants; i++) {
-        if (!wants[i].found) {
-            missing++;
-            fprintf(stderr, "[-] %s not found in map\n", wants[i].hex);
-        }
-    }
-    rc = (missing == 0) ? 0 : 1;
 
 out:
-    if (f != NULL)
-        fclose(f);
+    sl_free(&maps);
     free(wants);
     return rc;
 }

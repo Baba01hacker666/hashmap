@@ -138,9 +138,10 @@ void hm_usage_map(void)
 void hm_usage_search(void)
 {
     printf(
-        "usage: %s search -H <md5hex> [-F <file>] <map.hmmap>\n"
+        "usage: %s search -H <md5hex> [-F <file>] <map.hmmap>...\n"
         "\n"
-        "look hashes up inside a map file written by '%s map'.\n"
+        "look hashes up inside the map files written by '%s map'.\n"
+        "several files and/or a directory of *.hmmap files can be given.\n"
         "\n"
         "  -H, --hash <md5hex>        hash to look up (repeatable)\n"
         "  -F, --hash-file <file>     file of hashes, one per line\n"
@@ -148,7 +149,7 @@ void hm_usage_search(void)
         "\n"
         "examples:\n"
         "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
-        "  %s search -F targets.txt digs.hmmap\n",
+        "  %s search -F targets.txt /path/to/maps/\n",
         hm_prog, hm_prog, hm_prog, hm_prog);
 }
 

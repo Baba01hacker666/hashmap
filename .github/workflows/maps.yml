@@ -1,0 +1,103 @@
+name: maps
+
+# Builds the ready-to-download maps: every candidate of a keyspace with its
+# MD5 digest, so a hash can be looked up instantly instead of brute forced.
+#
+#   fast = letters + digits (alnum), lengths 1-4   (~15M candidates, 300 MB)
+#   big  = letters + digits + specials, lengths 1-4 (~82M candidates, 1.7 GB)
+#
+# The big map is split per length so every file stays below the 2 GB asset
+# limit; `hashmap search` accepts several files or a whole directory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'which map to build'
+        type: choice
+        options:
+          - fast
+          - big
+          - both
+        default: both
+  schedule:
+    - cron: '43 3 * * 0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build maps
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hashmap
+        run: make
+
+      - name: Report cores
+        run: echo "cores=$(nproc)"
+
+      - name: Build the fast map (letters + digits, lengths 1-4)
+        if: inputs.profile == 'fast' || inputs.profile == 'both'
+        run: |
+          mkdir -p maps
+          ./hashmap map -o maps/alnum-1-4.hmmap -c alnum \
+              --min 1 --max 4 -t "$(nproc)" --state maps/alnum.state
+          ls -l maps/
+
+      - name: Build the big map (letters + digits + specials, per length)
+        if: inputs.profile == 'big' || inputs.profile == 'both'
+        run: |
+          mkdir -p maps
+          for L in 1 2 3 4; do
+            ./hashmap map -o "maps/full-l$L.hmmap" -c full \
+                --min "$L" --max "$L" -t "$(nproc)" \
+                --state "maps/full-l$L.state"
+          done
+          ls -l maps/
+
+      - name: Checksums
+        if: always()
+        run: |
+          cd maps 2>/dev/null || exit 0
+          sha256sum *.hmmap > SHA256SUMS 2>/dev/null || true
+          cat SHA256SUMS 2>/dev/null || true
+
+      - name: Upload as workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maps-${{ inputs.profile || 'scheduled' }}
+          path: maps/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Attach to the 'maps' release
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: maps
+          name: hashmap maps
+          body: |
+            Ready-to-search MD5 maps built by `hashmap map`.
+
+            | file | charset | lengths | candidates |
+            |------|---------|---------|------------|
+            | `alnum-1-4.hmmap` | letters + digits | 1-4 | 15,018,570 |
+            | `full-l1..l4.hmmap` | letters + digits + specials | 1-4 each | 82,317,120 |
+
+            Download, then look a hash up instantly:
+
+            ```sh
+            hashmap search -H <md5hex> alnum-1-4.hmmap
+            hashmap search -H <md5hex> *.hmmap
+            hashmap search -H <md5hex> /path/to/maps/     # whole directory
+            ```
+          files: |
+            maps/*.hmmap
+            maps/SHA256SUMS
+          fail_on_unmatched_files: false

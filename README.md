@@ -49,6 +49,7 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | file | topic |
 |------|-------|
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
+| [docs/maps.md](docs/maps.md) | prebuilt maps, how to build and use them |
 | [docs/resume.md](docs/resume.md) | state files, exact resume, the farm workflow |
 | [docs/workflows.md](docs/workflows.md) | CI, release artifacts, running the farm |
 | [docs/development.md](docs/development.md) | source layout, build targets, tests, hooks |

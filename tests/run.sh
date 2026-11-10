@@ -293,6 +293,32 @@ printf 'HMSTATE 2\nmode map\ncs 30\nmin 1\nmax 1\nsalt -\npos post\ntargets 0\n'
 [ $? -eq 1 ] && ok "search rejects a non-map file" || bad "search rejects a non-map file"
 
 # ------------------------------------------------------------------
+head_ "search across shards"
+# ------------------------------------------------------------------
+mkdir -p "$TMP/shards"
+"$BIN" map -o "$TMP/shards/a.hmmap" -c digits --min 1 --max 3 >/dev/null 2>&1
+"$BIN" map -o "$TMP/shards/b.hmmap" -c digits --min 4 --max 4 >/dev/null 2>&1
+H4="$(md5_of '1234')"
+H3="$(md5_of '123')"
+
+# two shards given one by one
+out="$("$BIN" search -H "$H3" -H "$H4" "$TMP/shards/a.hmmap" \
+       "$TMP/shards/b.hmmap" 2>/dev/null | sort | tr '\n' ' ')"
+case "$out" in
+    *"$H3:123"*) ok "search finds a hash in the first shard" ;;
+    *) bad "search finds a hash in the first shard (got=$out)" ;;
+esac
+case "$out" in
+    *"$H4:1234"*) ok "search finds a hash in the second shard" ;;
+    *) bad "search finds a hash in the second shard (got=$out)" ;;
+esac
+
+# a whole directory at once
+out="$("$BIN" search -H "$H4" "$TMP/shards" 2>/dev/null)"
+[ "$out" = "$H4:1234" ] && ok "search scans a directory of shards" \
+    || bad "search scans a directory of shards (got=$out)"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0
