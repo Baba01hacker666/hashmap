@@ -3,7 +3,7 @@
 # MIT License - Copyright (c) 2026 baba01hacker666
 
 CC      ?= cc
-MODULES  := util charset crypto engine brute digest map search main
+MODULES  := util charset crypto engine brute digest map search wordlist main
 SRCS     := $(MODULES:%=src/%.c)
 OBJS     := $(SRCS:.c=.o)
 DEPS     := $(OBJS:.o=.d)

@@ -319,6 +319,45 @@ out="$("$BIN" search -H "$H4" "$TMP/shards" 2>/dev/null)"
     || bad "search scans a directory of shards (got=$out)"
 
 # ------------------------------------------------------------------
+head_ "wordlist mode"
+# ------------------------------------------------------------------
+WL="$TMP/wl.txt"
+printf 'password\nletmein\nabc123\nqqqqnotthere\n' > "$WL"
+HWP="$(md5_of 'password')"
+HWM="$(md5_of 'letmein')"
+
+"$BIN" wordlist -H "$HWP" -H "$HWM" -w "$WL" >/dev/null 2>&1
+[ $? -eq 0 ] && ok "wordlist finds all targets" || bad "wordlist finds all targets"
+
+"$BIN" wordlist -H "$HWP" -H "$(md5_of 'zzzmiss')" -w "$WL" >/dev/null 2>&1
+[ $? -eq 1 ] && ok "wordlist miss exits 1" || bad "wordlist miss exits 1"
+
+# --first stops at the first hit and exits 0
+"$BIN" wordlist -H "$(md5_of 'zzzmiss')" -H "$HWP" -w "$WL" --first \
+    >/dev/null 2>&1
+[ $? -eq 0 ] && ok "wordlist --first exits 0 on one hit" \
+    || bad "wordlist --first exits 0 on one hit"
+
+# results are stored
+rm -f "$TMP/wl-out.txt"
+"$BIN" wordlist -H "$HWP" -w "$WL" -o "$TMP/wl-out.txt" >/dev/null 2>&1
+grep -q "$HWP:password" "$TMP/wl-out.txt" && ok "wordlist -o stores results" \
+    || bad "wordlist -o stores results"
+
+# the shipped common wordlist works
+if [ -f wordlists/common.txt ]; then
+    HC="$(md5_of 'password')"
+    "$BIN" wordlist -H "$HC" -w wordlists/common.txt >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "shipped common wordlist" || bad "shipped common wordlist"
+fi
+
+# brute --first: one hit is enough
+"$BIN" brute -H "$(md5_of 'zzzmiss')" -H "$(md5_of '123')" -c digits --max 4 --first \
+    >/dev/null 2>&1
+[ $? -eq 0 ] && ok "brute --first exits 0 on one hit" \
+    || bad "brute --first exits 0 on one hit"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0

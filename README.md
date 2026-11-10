@@ -6,6 +6,7 @@ Fast multi-threaded hash toolkit in pure C — no deps, just `cc` and pthreads.
 - **brute** — crack MD5 hashes by brute force, over any charset and length range
 - **map** — build an exhaustive `digest -> plaintext` map file of a keyspace
 - **search** — look hashes up inside a map file
+- **wordlist** — match target hashes against a wordlist of common passwords
 
 Every long run is **resumable**: stop it, and it continues exactly where it
 left off — no candidate is ever tried twice or skipped.
@@ -50,6 +51,7 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 |------|-------|
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
 | [docs/maps.md](docs/maps.md) | prebuilt maps, how to build and use them |
+| [docs/lookup.md](docs/lookup.md) | the lookup workflow: maps → wordlist → brute force |
 | [docs/resume.md](docs/resume.md) | state files, exact resume, the farm workflow |
 | [docs/workflows.md](docs/workflows.md) | CI, release artifacts, running the farm |
 | [docs/development.md](docs/development.md) | source layout, build targets, tests, hooks |

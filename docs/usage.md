@@ -10,6 +10,7 @@ hashmap <mode> [options]
 | `brute` | crack MD5 hashes by brute force over a keyspace |
 | `map` | write a `digest -> plaintext` map file for a whole keyspace |
 | `search` | look hashes up inside a map file |
+| `wordlist` | match target hashes against a wordlist |
 
 `hashmap --help` shows the mode list and the shared flags,
 `hashmap <mode> --help` shows everything that mode accepts.
@@ -103,6 +104,32 @@ some hash was not found. Scanning stops as soon as all requested hashes were
 found, so a directory of shards is cheap when the answer is in an early one.
 
 See [maps.md](maps.md) for the ready-to-download maps.
+
+## wordlist
+
+```sh
+hashmap wordlist -H <md5hex> -w wordlists/common.txt
+hashmap wordlist -F targets.txt -w big.txt -o cracked.txt --first
+```
+
+| flag | meaning |
+|------|---------|
+| `-w, --wordlist <file>` | wordlist, one candidate per line |
+| `-o, --out <file>` | append the cracked results to this file |
+| `-s, --salt <string>` | salt applied to every candidate |
+| `-p, --salt-pos <pre\|post>` | salt placement (default `pre`) |
+| `-t, --threads <n>` | worker threads (default: all cores) |
+| `-f, --first` | stop at the first hit |
+
+Exit code `0` when every target was found (`--first`: when one was).
+
+A small list of the most common passwords ships with the tool:
+`wordlists/common.txt`.
+
+## --first
+
+`brute` and `wordlist` accept `--first`: they stop at the first hit instead
+of waiting for every target, and exit `0` as soon as something was found.
 
 ## Charsets
 

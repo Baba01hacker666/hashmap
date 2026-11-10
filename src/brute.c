@@ -68,6 +68,8 @@ int hm_mode_brute(int argc, char **argv)
 
     if (rc < 0)
         return 1;
+    if (cfg.stop_first)
+        return (rc > 0) ? 0 : 1; /* --first: one hit is enough */
     if (finished && rc >= cfg.ntargets)
         return 0;
     return 1;

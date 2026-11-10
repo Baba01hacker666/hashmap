@@ -28,10 +28,12 @@ int hm_mode_digest(int argc, char **argv);
 int hm_mode_brute(int argc, char **argv);
 int hm_mode_map(int argc, char **argv);
 int hm_mode_search(int argc, char **argv);
+int hm_mode_wordlist(int argc, char **argv);
 void hm_usage_all(const char *prog);
 void hm_usage_digest(void);
 void hm_usage_brute(void);
 void hm_usage_map(void);
 void hm_usage_search(void);
+void hm_usage_wordlist(void);
 
 #endif /* HASHMAP_H */

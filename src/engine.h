@@ -35,6 +35,9 @@ typedef struct {
     /* state/resume; empty = no state file */
     char state_path[HM_MAX_STATE_PATH];
 
+    /* stop at the first hit instead of waiting for every target */
+    int stop_first;
+
     /* results path (used to open outf in hm_opts_common) */
     char out_path[HM_MAX_STATE_PATH];
 

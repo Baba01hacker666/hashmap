@@ -1,0 +1,242 @@
+name: lookup
+
+# Look hashes up the cheap way first:
+#   1. the prebuilt maps (letters+digits, letters+digits+specials)
+#   2. a wordlist of common passwords
+#   3. brute force as the last resort (resumable - the farm workflow can
+#      continue it)
+# Each stage is skipped when the previous one already solved everything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hashes:
+        description: 'hashes to look up, one md5 hex per line'
+        required: false
+        default: ''
+      hash_file:
+        description: 'file in the repository with hashes (optional)'
+        required: false
+        default: ''
+      wordlist:
+        description: 'wordlist to try (path in the repo, or "none")'
+        required: false
+        default: 'wordlists/common.txt'
+      use_maps:
+        description: 'use the prebuilt maps from the "maps" release'
+        type: boolean
+        default: true
+      charset:
+        description: 'charset for the brute force fallback'
+        required: false
+        default: 'lower+digits'
+      min:
+        description: 'min length for the brute force fallback'
+        required: false
+        default: '1'
+      max:
+        description: 'max length for the brute force fallback'
+        required: false
+        default: '6'
+      salt:
+        description: 'salt (optional)'
+        required: false
+        default: ''
+      saltpos:
+        description: 'salt position (pre|post)'
+        required: false
+        default: 'pre'
+      stop_first:
+        description: 'stop as soon as one hash is cracked'
+        type: boolean
+        default: false
+      brute_minutes:
+        description: 'minutes for the brute force stage'
+        required: false
+        default: '30'
+      store:
+        description: 'where to store the results'
+        type: choice
+        options:
+          - artifact
+          - commit
+          - none
+        default: artifact
+      results_name:
+        description: 'name of the results file'
+        required: false
+        default: 'lookup-results.txt'
+
+permissions:
+  contents: write
+
+env:
+  FARM_DIR: lookup
+
+jobs:
+  lookup:
+    name: lookup hashes
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hashmap
+        run: make
+
+      - name: Collect the hashes
+        id: collect
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          : > "$FARM_DIR/hashes.txt"
+          if [ -n "${{ inputs.hashes }}" ]; then
+            printf '%s\n' "${{ inputs.hashes }}" | tr ' ,' '\n\n' \
+                | grep -Eo '[0-9a-fA-F]{32}' | tr 'A-F' 'a-f' \
+                >> "$FARM_DIR/hashes.txt" || true
+          fi
+          if [ -n "${{ inputs.hash_file }}" ] && [ -f "${{ inputs.hash_file }}" ]; then
+            grep -Eo '[0-9a-fA-F]{32}' "${{ inputs.hash_file }}" | tr 'A-F' 'a-f' \
+                >> "$FARM_DIR/hashes.txt" || true
+          fi
+          sort -u "$FARM_DIR/hashes.txt" | grep -E '[0-9a-f]{32}' \
+              > "$FARM_DIR/hashes.tmp" || true
+          mv "$FARM_DIR/hashes.tmp" "$FARM_DIR/hashes.txt"
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "hashes:"; cat "$FARM_DIR/hashes.txt"
+          if [ "$total" -eq 0 ]; then
+            echo "::notice::no hashes to look up"
+          fi
+
+      - name: Stage 1 - prebuilt maps
+        id: stage_maps
+        if: inputs.use_maps && steps.collect.outputs.total != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p maps
+          if gh release download maps --pattern '*.hmmap' --dir maps \
+               --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "maps downloaded: $(ls maps | wc -l) file(s)"
+            ./hashmap search -F "$FARM_DIR/hashes.txt" maps/ \
+                -o "$FARM_DIR/hits-maps.txt" || true
+          else
+            echo "no maps release yet - skipping the map stage"
+          fi
+          found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
+
+      - name: Stage 2 - common passwords
+        id: stage_wordlist
+        if: steps.stage_maps.outputs.remaining != '0' && inputs.wordlist != 'none'
+        run: |
+          set -eu
+          wl="${{ inputs.wordlist }}"
+          if [ ! -f "$wl" ]; then
+            echo "wordlist '$wl' not found - skipping the wordlist stage"
+            echo "remaining=${{ steps.stage_maps.outputs.remaining }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          extra=""
+          if [ "${{ inputs.stop_first }}" = "true" ]; then extra="--first"; fi
+          saltargs=""
+          if [ -n "${{ inputs.salt }}" ]; then
+            saltargs="-s ${{ inputs.salt }} -p ${{ inputs.saltpos }}"
+          fi
+          ./hashmap wordlist -F "$FARM_DIR/hashes.txt" -w "$wl" \
+              $extra $saltargs -o "$FARM_DIR/hits-wordlist.txt" || true
+          found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
+
+      - name: Stage 3 - brute force fallback
+        id: stage_brute
+        if: steps.stage_wordlist.outputs.remaining != '0'
+        run: |
+          set -eu
+          extra=""
+          if [ "${{ inputs.stop_first }}" = "true" ]; then extra="--first"; fi
+          saltargs=""
+          if [ -n "${{ inputs.salt }}" ]; then
+            saltargs="-s ${{ inputs.salt }} -p ${{ inputs.saltpos }}"
+          fi
+          set +e
+          timeout -s TERM "${{ inputs.brute_minutes }}m" \
+            ./hashmap brute -F "$FARM_DIR/hashes.txt" \
+              -c "${{ inputs.charset }}" --min "${{ inputs.min }}" \
+              --max "${{ inputs.max }}" -t "$(nproc)" \
+              --state "$FARM_DIR/brute.state" $extra $saltargs \
+              -o "$FARM_DIR/hits-brute.txt"
+          set -e
+          found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "remaining=$((total - found))" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the results
+        id: results
+        if: always()
+        run: |
+          set -eu
+          cat "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u > "$FARM_DIR/results.txt" || true
+          found=$(wc -l < "$FARM_DIR/results.txt" | tr -d ' ')
+          total=$(wc -l < "$FARM_DIR/hashes.txt" 2>/dev/null | tr -d ' ' || echo 0)
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "### lookup"
+          echo ''
+          echo "cracked **$found of $total**"
+          echo ''
+          if [ -s "$FARM_DIR/results.txt" ]; then
+            echo '```'
+            cat "$FARM_DIR/results.txt"
+            echo '```'
+          else
+            echo 'nothing cracked yet - the brute force stage can be continued'
+            echo 'with the farm workflow (it resumes from the saved state).'
+          fi
+          {
+            echo
+            echo '### lookup'
+            echo ''
+            echo "cracked **$found of $total**"
+            echo ''
+            if [ -s "$FARM_DIR/results.txt" ]; then
+              echo '```'
+              cat "$FARM_DIR/results.txt"
+              echo '```'
+            else
+              echo 'nothing cracked yet.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Store the results (artifact)
+        if: inputs.store == 'artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lookup-results
+          path: |
+            ${{ env.FARM_DIR }}/results.txt
+            ${{ env.FARM_DIR }}/hits-*.txt
+            ${{ env.FARM_DIR }}/hashes.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Store the results (commit)
+        if: inputs.store == 'commit'
+        run: |
+          set -eu
+          mkdir -p results
+          cp "$FARM_DIR/results.txt" "results/${{ inputs.results_name }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "results/${{ inputs.results_name }}"
+          git commit -m "lookup: store results (${{ inputs.results_name }})" \
+            || echo "nothing to commit"
+          git push || echo "push failed"

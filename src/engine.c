@@ -723,6 +723,7 @@ static void report_found(const hm_target_t *tg, const char *plain, int L)
 {
     int idx = -1;
     bool all;
+    bool first = false;
 
     for (int i = 0; i < g_cfg->ntargets; i++) {
         if (strcmp(g_cfg->targets[i].hex, tg->hex) == 0)
@@ -737,10 +738,11 @@ static void report_found(const hm_target_t *tg, const char *plain, int L)
             fflush(g_cfg->outf);
         }
         atomic_fetch_add(&g_found_cnt, 1);
+        first = true;
     }
     all = (atomic_load(&g_found_cnt) >= g_cfg->ntargets);
     pthread_mutex_unlock(&g_found_mtx);
-    if (all)
+    if (all || (first && g_cfg->stop_first))
         atomic_store(&hm_stop, 1);
 }
 
@@ -1075,6 +1077,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "out", 1, 'o' },
         { "state", 1, 3 },
         { "fresh", 0, 4 },
+        { "first", 0, 5 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -1175,6 +1178,9 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             break;
         case 3: /* state */
             snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", hm_optarg);
+            break;
+        case 5: /* first: stop at the first hit */
+            cfg->stop_first = 1;
             break;
         case 4: /* fresh */
             if (cfg->state_path[0] != '\0')

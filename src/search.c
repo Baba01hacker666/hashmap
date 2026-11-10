@@ -120,7 +120,7 @@ static int sl_add_dir(strlist_t *l, const char *dir)
 }
 
 /* scan one map file for the wanted hashes */
-static int scan_map(const char *path, want_t *wants, int nwants)
+static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
 {
     FILE *f = fopen(path, "rb");
     char magic[HM_MAP_MAGIC_LEN];
@@ -169,6 +169,10 @@ static int scan_map(const char *path, want_t *wants, int nwants)
                 continue;
             if (memcmp(wants[i].bytes, rec, 16) == 0) {
                 printf("%s:%s\n", wants[i].hex, plain);
+                if (outf != NULL) {
+                    fprintf(outf, "%s:%s\n", wants[i].hex, plain);
+                    fflush(outf);
+                }
                 wants[i].found = 1;
                 break;
             }
@@ -183,11 +187,14 @@ int hm_mode_search(int argc, char **argv)
     static const hm_longopt_t lopts[] = {
         { "hash", 1, 'H' },
         { "hash-file", 1, 'F' },
+        { "out", 1, 'o' },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     want_t *wants = NULL;
     strlist_t maps = { NULL, 0, 0 };
+    const char *outpath = NULL;
+    FILE *outf = NULL;
     int nwants = 0;
     int opt;
     int rc = 2;
@@ -203,7 +210,7 @@ int hm_mode_search(int argc, char **argv)
     }
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:F:h", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:o:h", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -246,6 +253,9 @@ int hm_mode_search(int argc, char **argv)
             free(tgs);
             break;
         }
+        case 'o':
+            outpath = hm_optarg;
+            break;
         case 'h':
             hm_usage_search();
             free(wants);
@@ -284,8 +294,18 @@ int hm_mode_search(int argc, char **argv)
         goto out;
     }
 
+    if (outpath != NULL) {
+        outf = fopen(outpath, "a");
+        if (outf == NULL) {
+            fprintf(stderr, "[-] cannot open %s: %s\n", outpath,
+                    strerror(errno));
+            rc = 1;
+            goto out;
+        }
+    }
+
     for (int i = 0; i < maps.n; i++) {
-        if (scan_map(maps.v[i], wants, nwants) < 0) {
+        if (scan_map(maps.v[i], wants, nwants, outf) < 0) {
             rc = 1;
             goto out;
         }
@@ -313,6 +333,8 @@ int hm_mode_search(int argc, char **argv)
     }
 
 out:
+    if (outf != NULL)
+        fclose(outf);
     sl_free(&maps);
     free(wants);
     return rc;

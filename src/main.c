@@ -25,6 +25,7 @@ void hm_usage_all(const char *prog)
         "  brute    crack MD5 hashes by brute force     (resumable)\n"
         "  map      build a digest->plaintext map file  (resumable)\n"
         "  search   look hashes up inside a map file\n"
+        "  wordlist match target hashes against a wordlist\n"
         "\n"
         "flags (same meaning in every mode):\n"
         "  -H, --hash <md5hex>      a hash value (repeatable)\n"
@@ -153,6 +154,29 @@ void hm_usage_search(void)
         hm_prog, hm_prog, hm_prog, hm_prog);
 }
 
+void hm_usage_wordlist(void)
+{
+    printf(
+        "usage: %s wordlist -H <md5hex> -w <wordlist> [options]\n"
+        "\n"
+        "match target hashes against the candidates of a wordlist.\n"
+        "\n"
+        "  -H, --hash <md5hex>        hash to look for (repeatable)\n"
+        "  -F, --hash-file <file>     file of hashes, one per line\n"
+        "  -w, --wordlist <file>      wordlist, one candidate per line\n"
+        "  -o, --out <file>           append the cracked results to this file\n"
+        "  -s, --salt <string>        salt applied to every candidate\n"
+        "  -p, --salt-pos <pre|post>  salt placement (default: pre)\n"
+        "  -t, --threads <n>          worker threads (default: all cores)\n"
+        "  -f, --first                stop at the first hit\n"
+        "  -h, --help                 this help\n"
+        "\n"
+        "examples:\n"
+        "  %s wordlist -H <md5hex> -w wordlists/common.txt\n"
+        "  %s wordlist -F targets.txt -w big.txt -o cracked.txt --first\n",
+        hm_prog, hm_prog, hm_prog);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 0 && argv[0] != NULL)
@@ -187,9 +211,12 @@ int main(int argc, char **argv)
         rc = hm_mode_map(argc - 1, argv + 1);
     else if (strcmp(mode, "search") == 0)
         rc = hm_mode_search(argc - 1, argv + 1);
+    else if (strcmp(mode, "wordlist") == 0)
+        rc = hm_mode_wordlist(argc - 1, argv + 1);
     else {
         fprintf(stderr,
-                "[-] unknown mode '%s' (modes: digest, brute, map, search)\n",
+                "[-] unknown mode '%s' (modes: digest, brute, map, search, "
+                "wordlist)\n",
                 mode);
         fprintf(stderr, "[-] run '%s --help' for usage\n", hm_prog);
         return 2;
