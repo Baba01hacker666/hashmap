@@ -42,6 +42,17 @@ portable: $(SRCS)
 test: $(BIN)
 	@./tests/run.sh
 
+# wordlists: fetch the common password lists, dedupe and combine them
+#   make wordlist       top lists only (~4.6M candidates, seconds)
+#   make wordlist-full  everything incl. RockYou (~34M candidates, ~1 min)
+wordlist:
+	@./tools/fetch-wordlists.sh --fast
+
+wordlist-full:
+	@./tools/fetch-wordlists.sh --full
+
+.PHONY: wordlist wordlist-full
+
 install: $(BIN)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/hashmap

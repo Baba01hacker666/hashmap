@@ -1,0 +1,151 @@
+name: wordlists
+
+# Builds the combined password list (SecLists + RockYou, deduplicated) and
+# optionally uses it for a quick hash lookup.
+#
+# The lists are fetched here, never committed: the repository stays small and
+# the lists stay current.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'which lists to combine'
+        type: choice
+        options:
+          - fast
+          - full
+        default: full
+      hashes:
+        description: 'hashes to look up with the combined list (optional)'
+        required: false
+        default: ''
+      publish:
+        description: 'attach the combined list to the "wordlists" release'
+        type: boolean
+        default: true
+  schedule:
+    - cron: '23 4 * * 2'
+
+permissions:
+  contents: write
+
+env:
+  FARM_DIR: wordlists
+
+jobs:
+  build:
+    name: combine wordlists
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hashmap
+        run: make
+
+      - name: Fetch and combine the lists
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          ./tools/fetch-wordlists.sh --${{ inputs.profile }} \
+              --out "$FARM_DIR/combined.txt" --cache "$FARM_DIR/cache"
+          ls -lh "$FARM_DIR/combined.txt"
+
+      - name: Statistics
+        id: stats
+        run: |
+          set -eu
+          f="$FARM_DIR/combined.txt"
+          lines=$(wc -l < "$f" | tr -d ' ')
+          size=$(du -h "$f" | cut -f1)
+          sha=$(sha256sum "$f" | cut -d' ' -f1)
+          echo "lines=$lines" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "$sha  combined.txt" > "$FARM_DIR/SHA256SUMS"
+          echo "### combined wordlist"
+          echo ''
+          echo "| metric | value |"
+          echo "|--------|-------|"
+          echo "| candidates | $lines |"
+          echo "| size | $size |"
+          echo "| sha256 | \`$sha\` |"
+          {
+            echo
+            echo '### combined wordlist'
+            echo ''
+            echo "| metric | value |"
+            echo "|--------|-------|"
+            echo "| candidates | $lines |"
+            echo "| size | $size |"
+            echo "| sha256 | \`$sha\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Quick lookup with the combined list
+        if: inputs.hashes != ''
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          printf '%s\n' "${{ inputs.hashes }}" | tr ' ,' '\n\n' \
+              | grep -Eo '[0-9a-fA-F]{32}' | tr 'A-F' 'a-f' \
+              | sort -u > "$FARM_DIR/hashes.txt" || true
+          total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          echo "looking up $total hash(es)"
+          set +e
+          ./hashmap wordlist -F "$FARM_DIR/hashes.txt" \
+              -w "$FARM_DIR/combined.txt" -t "$(nproc)" \
+              -o "$FARM_DIR/results.txt"
+          set -e
+          if [ -s "$FARM_DIR/results.txt" ]; then
+            echo "cracked:"
+            cat "$FARM_DIR/results.txt"
+          else
+            echo "nothing cracked"
+          fi
+
+      - name: Upload the combined list
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-wordlist-${{ inputs.profile || 'scheduled' }}
+          path: |
+            ${{ env.FARM_DIR }}/combined.txt
+            ${{ env.FARM_DIR }}/SHA256SUMS
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload the lookup results
+        if: inputs.hashes != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordlist-results
+          path: ${{ env.FARM_DIR }}/results.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Attach to the 'wordlists' release
+        if: inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wordlists
+          name: hashmap wordlists
+          body: |
+            The combined password list: SecLists (MIT) plus RockYou,
+            deduplicated and sorted.
+
+            | metric | value |
+            |--------|-------|
+            | candidates | ${{ steps.stats.outputs.lines }} |
+            | size | ${{ steps.stats.outputs.size }} |
+            | sha256 | `${{ steps.stats.outputs.sha256 }}` |
+
+            Use it with the wordlist mode:
+
+            ```sh
+            hashmap wordlist -H <md5hex> -w combined.txt
+            ```
+          files: |
+            ${{ env.FARM_DIR }}/combined.txt
+            ${{ env.FARM_DIR }}/SHA256SUMS
+          fail_on_unmatched_files: false

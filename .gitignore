@@ -9,3 +9,4 @@ cracked*.txt
 *.state
 *.hmmap
 maps/
+wordlists/combined.txt

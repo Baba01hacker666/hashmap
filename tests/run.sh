@@ -351,6 +351,13 @@ if [ -f wordlists/common.txt ]; then
     [ $? -eq 0 ] && ok "shipped common wordlist" || bad "shipped common wordlist"
 fi
 
+# the fetcher script is present and usable
+if [ -x tools/fetch-wordlists.sh ]; then
+    ok "fetch-wordlists.sh is executable"
+    "$BIN" wordlist --help >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "wordlist mode has usage" || bad "wordlist mode has usage"
+fi
+
 # brute --first: one hit is enough
 "$BIN" brute -H "$(md5_of 'zzzmiss')" -H "$(md5_of '123')" -c digits --max 4 --first \
     >/dev/null 2>&1

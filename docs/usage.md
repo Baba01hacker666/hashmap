@@ -124,7 +124,8 @@ hashmap wordlist -F targets.txt -w big.txt -o cracked.txt --first
 Exit code `0` when every target was found (`--first`: when one was).
 
 A small list of the most common passwords ships with the tool:
-`wordlists/common.txt`.
+`wordlists/common.txt`. The big lists (SecLists + RockYou, deduplicated) are
+fetched with `make wordlist-full` — see [wordlists.md](wordlists.md).
 
 ## --first
 

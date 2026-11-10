@@ -26,7 +26,7 @@ gh workflow run lookup.yml \
 |-------|---------|
 | `hashes` | the hashes to look up, one md5 hex per line |
 | `hash_file` | a file in the repository with hashes |
-| `wordlist` | wordlist to try (`none` to skip the stage) |
+| `wordlist` | wordlist to try: a path, `combined` (SecLists+RockYou, built on the fly) or `none` |
 | `use_maps` | use the prebuilt maps (default yes) |
 | `charset`, `min`, `max` | keyspace for the brute force fallback |
 | `salt`, `saltpos` | salt for all stages |
@@ -61,6 +61,9 @@ hashmap search -F hashes.txt maps/ -o hits-maps.txt
 ```sh
 hashmap wordlist -F hashes.txt -w wordlists/common.txt -o hits-wordlist.txt
 ```
+
+With `-f wordlist=combined` the workflow builds the combined list first
+(SecLists + RockYou, ~34M deduplicated candidates, about a minute).
 
 The `wordlist` mode hashes every candidate of the list (one thread per core,
 salted or not) and compares it against the targets — much cheaper than a

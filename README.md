@@ -36,6 +36,13 @@ hashmap search -H 202cb962ac59075b964b07152d234b70 digs.hmmap
 # 202cb962ac59075b964b07152d234b70:123
 ```
 
+Crack a hash against the common password lists (34M candidates, ~1.5 s):
+
+```sh
+make wordlist-full                        # fetch + dedupe SecLists & RockYou
+hashmap wordlist -H <md5hex> -w wordlists/combined.txt
+```
+
 Pause and continue a long run:
 
 ```sh
@@ -52,6 +59,7 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
 | [docs/maps.md](docs/maps.md) | prebuilt maps, how to build and use them |
 | [docs/lookup.md](docs/lookup.md) | the lookup workflow: maps → wordlist → brute force |
+| [docs/wordlists.md](docs/wordlists.md) | fetching and combining the password lists |
 | [docs/resume.md](docs/resume.md) | state files, exact resume, the farm workflow |
 | [docs/workflows.md](docs/workflows.md) | CI, release artifacts, running the farm |
 | [docs/development.md](docs/development.md) | source layout, build targets, tests, hooks |
