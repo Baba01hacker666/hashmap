@@ -7,10 +7,9 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include <errno.h>
-#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +17,7 @@
 
 #include "engine.h"
 #include "hashmap.h"
+#include "util.h"
 
 #define HM_MAP_MAGIC "HMMAP 1\n"
 

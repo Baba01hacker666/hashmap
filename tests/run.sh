@@ -22,12 +22,46 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# portable hash helpers (GNU coreutils vs BSD/macOS)
+md5_of() {
+    if command -v md5sum >/dev/null 2>&1; then
+        printf '%s' "$1" | md5sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | md5 -q
+    fi
+}
+sha1_of() {
+    if command -v sha1sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha1sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
+    fi
+}
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+    fi
+}
+file_md5() {
+    if command -v md5sum >/dev/null 2>&1; then
+        md5sum "$1" | cut -d' ' -f1
+    else
+        md5 -q "$1"
+    fi
+}
+
 # ------------------------------------------------------------------
 head_ "digest mode"
 # ------------------------------------------------------------------
 for algo in md5 sha1 sha256; do
     for txt in "hello" "" "a" "The quick brown fox"; do
-        want="$(printf '%s' "$txt" | ${algo}sum | cut -d' ' -f1)"
+        case "$algo" in
+            md5)    want="$(md5_of "$txt")" ;;
+            sha1)   want="$(sha1_of "$txt")" ;;
+            sha256) want="$(sha256_of "$txt")" ;;
+        esac
         got="$("$BIN" digest -a "$algo" -i "$txt" 2>/dev/null)"
         if [ "$want" = "$got" ]; then
             ok "digest $algo '$txt'"
@@ -39,33 +73,33 @@ done
 
 # long string (dynamic buffer path)
 LONG="$(head -c 500 /dev/urandom | base64 | tr -d '\n')"
-want="$(printf '%s' "$LONG" | md5sum | cut -d' ' -f1)"
+want="$(md5_of "$LONG")"
 got="$("$BIN" digest -i "$LONG")"
 [ "$want" = "$got" ] && ok "digest long string" || bad "digest long string"
 
 # file hashing
 head -c 4096 /dev/urandom > "$TMP/blob.bin"
-want="$(md5sum "$TMP/blob.bin" | cut -d' ' -f1)"
+want="$(file_md5 "$TMP/blob.bin")"
 got="$("$BIN" digest -f "$TMP/blob.bin")"
 [ "$want" = "$got" ] && ok "digest file" || bad "digest file"
 
 # stdin mode (hashmap strips the line ending, so compare against printf w/o \n)
-want="$(printf 'abc' | md5sum | cut -d' ' -f1)"
+want="$(md5_of 'abc')"
 got="$(printf 'abc\n' | "$BIN" digest -i - | cut -d: -f1)"
 [ "$want" = "$got" ] && ok "digest stdin" || bad "digest stdin"
 
 # salted digest
-want="$(printf 'saltabc' | md5sum | cut -d' ' -f1)"
+want="$(md5_of 'saltabc')"
 got="$("$BIN" digest -i abc -s salt -p pre)"
 [ "$want" = "$got" ] && ok "digest salted pre" || bad "digest salted pre"
-want="$(printf 'abcsalt' | md5sum | cut -d' ' -f1)"
+want="$(md5_of 'abcsalt')"
 got="$("$BIN" digest -i abc -s salt -p post)"
 [ "$want" = "$got" ] && ok "digest salted post" || bad "digest salted post"
 
 # ------------------------------------------------------------------
 head_ "brute mode"
 # ------------------------------------------------------------------
-H123="$(printf '123' | md5sum | cut -d' ' -f1)"
+H123="$(md5_of '123')"
 "$BIN" brute -H "$H123" -c digits --max 6 >"$TMP/out.txt" 2>&1
 rc=$?
 [ $rc -eq 0 ] && ok "brute hit exit 0" || bad "brute hit exit 0 (rc=$rc)"
@@ -76,17 +110,17 @@ rc=$?
 [ $rc -eq 1 ] && ok "brute miss exit 1" || bad "brute miss exit 1 (rc=$rc)"
 
 # salted pre / post
-HS="$(printf 'salt999' | md5sum | cut -d' ' -f1)"
+HS="$(md5_of 'salt999')"
 "$BIN" brute -H "$HS" -c digits --max 4 -s salt -p pre >"$TMP/saltpre.txt" 2>&1
 rc=$?
 [ $rc -eq 0 ] && ok "brute salted pre" || bad "brute salted pre (rc=$rc)"
-HS="$(printf '999salt' | md5sum | cut -d' ' -f1)"
+HS="$(md5_of '999salt')"
 "$BIN" brute -H "$HS" -c digits --max 4 -s salt -p post >"$TMP/saltpost.txt" 2>&1
 rc=$?
 [ $rc -eq 0 ] && ok "brute salted post" || bad "brute salted post (rc=$rc)"
 
 # multiple targets
-"$BIN" brute -H "$H123" -H "$(printf '456' | md5sum | cut -d' ' -f1)" \
+"$BIN" brute -H "$H123" -H "$(md5_of '456')" \
     -c digits --max 6 >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] && ok "brute multi-target" || bad "brute multi-target (rc=$rc)"
@@ -123,7 +157,7 @@ out="$("$BIN" search -H "$H123" "$TMP/test.hmmap" 2>/dev/null)"
 head_ "state / resume"
 # ------------------------------------------------------------------
 STATE="$TMP/resume.state"
-HNF="$(printf 'definitelynotfound' | md5sum | cut -d' ' -f1)"
+HNF="$(md5_of 'definitelynotfound')"
 "$BIN" brute -H "$HNF" -c digits --min 1 --max 8 --state "$STATE" -t 4 \
     >"$TMP/res1.log" 2>&1 &
 pid=$!

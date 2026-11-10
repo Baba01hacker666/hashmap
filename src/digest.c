@@ -2,10 +2,9 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include <errno.h>
-#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,13 +16,13 @@
 
 int hm_mode_digest(int argc, char **argv)
 {
-    static const struct option lopts[] = {
-        { "algo", required_argument, NULL, 'a' },
-        { "input", required_argument, NULL, 'i' },
-        { "file", required_argument, NULL, 'f' },
-        { "salt", required_argument, NULL, 's' },
-        { "salt-pos", required_argument, NULL, 'p' },
-        { NULL, 0, NULL, 0 }
+    static const hm_longopt_t lopts[] = {
+        { "algo", 1, 'a' },
+        { "input", 1, 'i' },
+        { "file", 1, 'f' },
+        { "salt", 1, 's' },
+        { "salt-pos", 1, 'p' },
+        { NULL, 0, 0 }
     };
     hm_algo_t alg = HM_ALG_MD5;
     const char *input = NULL;
@@ -33,32 +32,32 @@ int hm_mode_digest(int argc, char **argv)
     int salt_pre = 1;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "a:i:f:s:p:h", lopts, NULL)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "a:i:f:s:p:h", lopts)) != -1) {
         switch (opt) {
         case 'a':
-            if (hm_algo_parse(optarg, &alg) < 0) {
-                fprintf(stderr, "[-] unknown algo '%s'\n", optarg);
+            if (hm_algo_parse(hm_optarg, &alg) < 0) {
+                fprintf(stderr, "[-] unknown algo '%s'\n", hm_optarg);
                 return 2;
             }
             break;
         case 'i':
-            input = optarg;
+            input = hm_optarg;
             break;
         case 'f':
-            file = optarg;
+            file = hm_optarg;
             break;
         case 's':
-            salt_len = (int)strlen(optarg);
+            salt_len = (int)strlen(hm_optarg);
             if (salt_len > HM_MAX_SALT) {
                 fprintf(stderr, "[-] salt too long (max %d)\n", HM_MAX_SALT);
                 return 2;
             }
-            memcpy(salt, optarg, (size_t)salt_len);
+            memcpy(salt, hm_optarg, (size_t)salt_len);
             break;
         case 'p':
-            if (strcmp(optarg, "pre") == 0)
+            if (strcmp(hm_optarg, "pre") == 0)
                 salt_pre = 1;
-            else if (strcmp(optarg, "post") == 0)
+            else if (strcmp(hm_optarg, "post") == 0)
                 salt_pre = 0;
             else {
                 fprintf(stderr, "[-] salt-pos must be pre|post\n");

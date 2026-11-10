@@ -2,7 +2,7 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include <stdio.h>
 #include <string.h>

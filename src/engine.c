@@ -8,13 +8,12 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include "engine.h"
 
 #include <ctype.h>
 #include <errno.h>
-#include <getopt.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -453,11 +452,11 @@ static int state_write(void)
     if (!failed && fflush(f) != 0)
         failed = 1;
     if (!failed)
-        fsync(fileno(f));
+        (void)hm_fsync(f);
     if (fclose(f) != 0)
         failed = 1;
     if (failed) {
-        unlink(tmp);
+        remove(tmp);
         fprintf(stderr, "[-] state write failed\n");
         snapshot_free(snaps);
         return -1;
@@ -465,7 +464,7 @@ static int state_write(void)
     snapshot_free(snaps);
     if (rename(tmp, g_cfg->state_path) != 0) {
         fprintf(stderr, "[-] state rename failed: %s\n", strerror(errno));
-        unlink(tmp);
+        remove(tmp);
         return -1;
     }
     return 0;
@@ -985,9 +984,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     }
 
     while (atomic_load(&g_workers_done) < cfg->nthreads) {
-        struct timespec ts = { 0, 200 * 1000 * 1000 };
-
-        nanosleep(&ts, NULL);
+        hm_sleep_ms(200);
         if (atomic_load(&hm_stop) == 0)
             engine_progress_tick(total_space, t0);
     }
@@ -1036,7 +1033,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
             printf("[*] state saved to %s (resume with --state %s)\n",
                    cfg->state_path, cfg->state_path);
     } else if (*finished && cfg->state_path[0] != '\0') {
-        if (unlink(cfg->state_path) == 0)
+        if (remove(cfg->state_path) == 0)
             printf("[*] state file removed (run complete)\n");
         else if (errno != ENOENT)
             printf("[-] failed removing state: %s\n", strerror(errno));
@@ -1055,35 +1052,34 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
 
 int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
 {
-    static const struct option lopts[] = {
-        { "hash", required_argument, NULL, 'H' },
-        { "file", required_argument, NULL, 'f' },
-        { "charset", required_argument, NULL, 'c' },
-        { "min", required_argument, NULL, 1 },
-        { "max", required_argument, NULL, 2 },
-        { "threads", required_argument, NULL, 't' },
-        { "salt", required_argument, NULL, 's' },
-        { "salt-pos", required_argument, NULL, 'p' },
-        { "out", required_argument, NULL, 'o' },
-        { "state", required_argument, NULL, 3 },
-        { "fresh", no_argument, NULL, 4 },
-        { NULL, 0, NULL, 0 }
+    static const hm_longopt_t lopts[] = {
+        { "hash", 1, 'H' },
+        { "file", 1, 'f' },
+        { "charset", 1, 'c' },
+        { "min", 1, 1 },
+        { "max", 1, 2 },
+        { "threads", 1, 't' },
+        { "salt", 1, 's' },
+        { "salt-pos", 1, 'p' },
+        { "out", 1, 'o' },
+        { "state", 1, 3 },
+        { "fresh", 0, 4 },
+        { NULL, 0, 0 }
     };
     int opt;
     bool have_cs = false;
     bool have_out = false;
     char cs_buf[HM_MAX_CS + 1];
     size_t cs_buflen = 0;
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int cores = hm_cpu_count();
 
     cfg->minlen = 1;
     cfg->maxlen = 6;
-    cfg->nthreads = (cores > 1) ? (int)cores : 1;
+    cfg->nthreads = (cores > 1) ? cores : 1;
     cfg->ntargets = 0;
 
-    optind = 1;
-    while ((opt = getopt_long(argc, argv, "H:f:c:t:s:p:o:", lopts, NULL)) !=
-           -1) {
+    hm_getopt_reset();
+    while ((opt = hm_getopt_long(argc, argv, "H:f:c:t:s:p:o:", lopts)) != -1) {
         switch (opt) {
         case 'H':
             if (!want_targets) {
@@ -1094,7 +1090,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 fprintf(stderr, "[-] too many targets\n");
                 return -1;
             }
-            if (hm_parse_target(optarg, &cfg->targets[cfg->ntargets]) < 0)
+            if (hm_parse_target(hm_optarg, &cfg->targets[cfg->ntargets]) < 0)
                 return -1;
             cfg->ntargets++;
             break;
@@ -1103,50 +1099,50 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 fprintf(stderr, "[-] -f not valid in this mode\n");
                 return -1;
             }
-            if (hm_load_targets(optarg, cfg->targets, &cfg->ntargets) < 0)
+            if (hm_load_targets(hm_optarg, cfg->targets, &cfg->ntargets) < 0)
                 return -1;
             break;
         case 'c':
             have_cs = true;
-            if (strlen(optarg) > HM_MAX_CS) {
+            if (strlen(hm_optarg) > HM_MAX_CS) {
                 fprintf(stderr, "[-] charset too long (max %d)\n", HM_MAX_CS);
                 return -1;
             }
-            snprintf(cs_buf, sizeof(cs_buf), "%s", optarg);
+            snprintf(cs_buf, sizeof(cs_buf), "%s", hm_optarg);
             break;
         case 1: /* min */
-            if (sscanf(optarg, "%d", &cfg->minlen) != 1 ||
+            if (sscanf(hm_optarg, "%d", &cfg->minlen) != 1 ||
                 cfg->minlen < 1 || cfg->minlen > HM_MAX_PWLEN) {
                 fprintf(stderr, "[-] bad --min value\n");
                 return -1;
             }
             break;
         case 2: /* max */
-            if (sscanf(optarg, "%d", &cfg->maxlen) != 1 ||
+            if (sscanf(hm_optarg, "%d", &cfg->maxlen) != 1 ||
                 cfg->maxlen < 1 || cfg->maxlen > HM_MAX_PWLEN) {
                 fprintf(stderr, "[-] bad --max value\n");
                 return -1;
             }
             break;
         case 't':
-            if (sscanf(optarg, "%d", &cfg->nthreads) != 1 ||
+            if (sscanf(hm_optarg, "%d", &cfg->nthreads) != 1 ||
                 cfg->nthreads < 1) {
                 fprintf(stderr, "[-] bad --threads value\n");
                 return -1;
             }
             break;
         case 's':
-            cfg->salt_len = (int)strlen(optarg);
+            cfg->salt_len = (int)strlen(hm_optarg);
             if (cfg->salt_len > HM_MAX_SALT) {
                 fprintf(stderr, "[-] salt too long (max %d)\n", HM_MAX_SALT);
                 return -1;
             }
-            memcpy(cfg->salt, optarg, (size_t)cfg->salt_len);
+            memcpy(cfg->salt, hm_optarg, (size_t)cfg->salt_len);
             break;
         case 'p':
-            if (strcmp(optarg, "pre") == 0)
+            if (strcmp(hm_optarg, "pre") == 0)
                 cfg->salt_pre = 1;
-            else if (strcmp(optarg, "post") == 0)
+            else if (strcmp(hm_optarg, "post") == 0)
                 cfg->salt_pre = 0;
             else {
                 fprintf(stderr, "[-] salt-pos must be pre|post\n");
@@ -1155,14 +1151,14 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             break;
         case 'o':
             have_out = true;
-            snprintf(cfg->out_path, sizeof(cfg->out_path), "%s", optarg);
+            snprintf(cfg->out_path, sizeof(cfg->out_path), "%s", hm_optarg);
             break;
         case 3: /* state */
-            snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", optarg);
+            snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", hm_optarg);
             break;
         case 4: /* fresh */
             if (cfg->state_path[0] != '\0')
-                unlink(cfg->state_path);
+                remove(cfg->state_path);
             cfg->state_path[0] = '\0';
             break;
         default:

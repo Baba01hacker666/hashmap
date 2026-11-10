@@ -2,10 +2,9 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include <errno.h>
-#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +12,7 @@
 #include "crypto.h"
 #include "engine.h"
 #include "hashmap.h"
+#include "util.h"
 
 #define HM_MAP_MAGIC "HMMAP 1\n"
 #define HM_MAP_MAGIC_LEN (sizeof(HM_MAP_MAGIC) - 1)
@@ -25,10 +25,10 @@ typedef struct {
 
 int hm_mode_search(int argc, char **argv)
 {
-    static const struct option lopts[] = {
-        { "hash", required_argument, NULL, 'H' },
-        { "file", required_argument, NULL, 'f' },
-        { NULL, 0, NULL, 0 }
+    static const hm_longopt_t lopts[] = {
+        { "hash", 1, 'H' },
+        { "file", 1, 'f' },
+        { NULL, 0, 0 }
     };
     const char *mapfile = NULL;
     want_t *wants = NULL;
@@ -43,8 +43,8 @@ int hm_mode_search(int argc, char **argv)
         return 1;
     }
 
-    optind = 1;
-    while ((opt = getopt_long(argc, argv, "H:f:", lopts, NULL)) != -1) {
+    hm_getopt_reset();
+    while ((opt = hm_getopt_long(argc, argv, "H:f:", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -53,7 +53,7 @@ int hm_mode_search(int argc, char **argv)
                 fprintf(stderr, "[-] too many hashes\n");
                 goto out;
             }
-            if (hm_parse_target(optarg, &tg) < 0)
+            if (hm_parse_target(hm_optarg, &tg) < 0)
                 goto out;
             memcpy(wants[nwants].bytes, tg.bytes, 16);
             memcpy(wants[nwants].hex, tg.hex, 33);
@@ -69,7 +69,7 @@ int hm_mode_search(int argc, char **argv)
                 fprintf(stderr, "[-] out of memory\n");
                 goto out;
             }
-            if (hm_load_targets(optarg, tgs, &nt) < 0) {
+            if (hm_load_targets(hm_optarg, tgs, &nt) < 0) {
                 free(tgs);
                 goto out;
             }
@@ -92,9 +92,9 @@ int hm_mode_search(int argc, char **argv)
         }
     }
 
-    if (optind < argc)
-        mapfile = argv[optind++];
-    if (mapfile == NULL || nwants < 1 || optind < argc) {
+    if (hm_optind < argc)
+        mapfile = argv[hm_optind++];
+    if (mapfile == NULL || nwants < 1 || hm_optind < argc) {
         fprintf(stderr,
                 "[-] usage: %s search -H <md5hex>... [-f hashfile]"
                 " <map.hmmap>\n", "hashmap");

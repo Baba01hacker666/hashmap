@@ -2,10 +2,9 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
-#define _POSIX_C_SOURCE 200809L
+#include "compat.h"
 
 #include <errno.h>
-#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +12,7 @@
 
 #include "engine.h"
 #include "hashmap.h"
+#include "util.h"
 
 int hm_mode_brute(int argc, char **argv)
 {
@@ -28,9 +28,9 @@ int hm_mode_brute(int argc, char **argv)
         free(cfg.targets);
         return 2;
     }
-    if (optind < argc) {
+    if (hm_optind < argc) {
         /* positional hashes allowed too */
-        for (int i = optind; i < argc; i++) {
+        for (int i = hm_optind; i < argc; i++) {
             if (cfg.ntargets >= HM_MAX_TARGETS) {
                 fprintf(stderr, "[-] too many targets\n");
                 free(cfg.targets);
