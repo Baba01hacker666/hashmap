@@ -27,7 +27,9 @@ int hm_mode_search(int argc, char **argv)
 {
     static const hm_longopt_t lopts[] = {
         { "hash", 1, 'H' },
-        { "file", 1, 'f' },
+        { "hash-file", 1, 'F' },
+        { "file", 1, 'F' },
+        { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     const char *mapfile = NULL;
@@ -44,7 +46,7 @@ int hm_mode_search(int argc, char **argv)
     }
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:f:", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:f:h", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -61,6 +63,7 @@ int hm_mode_search(int argc, char **argv)
             nwants++;
             break;
         }
+        case 'F':
         case 'f': {
             hm_target_t *tgs = malloc(sizeof(hm_target_t) * (size_t)HM_MAX_TARGETS);
             int nt = 0;
@@ -87,7 +90,13 @@ int hm_mode_search(int argc, char **argv)
             free(tgs);
             break;
         }
+        case 'h':
+            hm_usage_search();
+            free(wants);
+            return 0;
         default:
+            fprintf(stderr, "[-] unknown option\n");
+            hm_usage_search();
             goto out;
         }
     }
@@ -96,8 +105,8 @@ int hm_mode_search(int argc, char **argv)
         mapfile = argv[hm_optind++];
     if (mapfile == NULL || nwants < 1 || hm_optind < argc) {
         fprintf(stderr,
-                "[-] usage: %s search -H <md5hex>... [-f hashfile]"
-                " <map.hmmap>\n", "hashmap");
+                "[-] search needs at least one hash (-H) and a map file\n");
+        hm_usage_search();
         goto out;
     }
 

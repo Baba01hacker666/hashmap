@@ -22,6 +22,7 @@ int hm_mode_digest(int argc, char **argv)
         { "file", 1, 'f' },
         { "salt", 1, 's' },
         { "salt-pos", 1, 'p' },
+        { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     hm_algo_t alg = HM_ALG_MD5;
@@ -65,10 +66,11 @@ int hm_mode_digest(int argc, char **argv)
             }
             break;
         case 'h':
-            printf("usage: %s digest [-a md5|sha1|sha256] [-i str|-f file]"
-                   " [-s salt] [-p pre|post]\n", "hashmap");
+            hm_usage_digest();
             return 0;
         default:
+            fprintf(stderr, "[-] unknown option\n");
+            hm_usage_digest();
             return 2;
         }
     }

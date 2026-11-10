@@ -20,11 +20,18 @@ typedef struct {
     char hex[65];
 } hm_target_t;
 
+/* program name as invoked (set by main, used in usage texts) */
+extern const char *hm_prog;
+
 /* mode entry points (each parses its own argv tail) */
 int hm_mode_digest(int argc, char **argv);
 int hm_mode_brute(int argc, char **argv);
 int hm_mode_map(int argc, char **argv);
 int hm_mode_search(int argc, char **argv);
 void hm_usage_all(const char *prog);
+void hm_usage_digest(void);
+void hm_usage_brute(void);
+void hm_usage_map(void);
+void hm_usage_search(void);
 
 #endif /* HASHMAP_H */

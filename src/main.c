@@ -11,79 +11,159 @@
 #include "hashmap.h"
 #include "util.h"
 
+const char *hm_prog = "hashmap";
+
 void hm_usage_all(const char *prog)
 {
     printf(
         "hashmap v%s - fast multi-threaded hash toolkit\n"
         "\n"
-        "usage:\n"
-        "  %s digest -a <md5|sha1|sha256> -i <string> [options]\n"
-        "  %s brute  -H <md5hex> [options]\n"
-        "  %s map    -o <out.hmmap> [options]\n"
-        "  %s search -H <md5hex> [-f hashfile] <map.hmmap>\n"
+        "usage: %s <mode> [options]\n"
         "\n"
-        "digest options:\n"
-        "  -a, --algo <md5|sha1|sha256>  hash algo (default md5)\n"
-        "  -i, --input <string>          string to hash ('-' = stdin lines)\n"
-        "  -f, --file <file>             hash whole file\n"
-        "  -s, --salt <string>           salt the input\n"
-        "  -p, --salt-pos <pre|post>     salt placement (default pre)\n"
+        "modes:\n"
+        "  digest   hash a string or a file            (md5, sha1, sha256)\n"
+        "  brute    crack MD5 hashes by brute force     (resumable)\n"
+        "  map      build a digest->plaintext map file  (resumable)\n"
+        "  search   look hashes up inside a map file\n"
         "\n"
-        "brute/map options:\n"
-        "  -H, --hash <md5hex>           target hash, repeat (brute only)\n"
-        "  -f, --file <file>             file of MD5 hashes (brute only)\n"
-        "  -c, --charset <spec>          builtins: digits lower upper alpha\n"
-        "                                alnum hexlower hexupper special all,\n"
-        "                                combinable with '+' or literal chars\n"
-        "                                (default digits)\n"
-        "      --min <n>                 min length (default 1)\n"
-        "      --max <n>                 max length (default 6)\n"
-        "  -t, --threads <n>             worker threads (default: all cores)\n"
-        "  -s, --salt <string>           salt applied to every candidate\n"
-        "  -p, --salt-pos <pre|post>     salt placement (default pre)\n"
-        "  -o, --out <file>              brute: append results to file\n"
-        "                                map: map file to write (required)\n"
-        "      --state <file>            resume/state file (default: none)\n"
-        "      --fresh                   ignore/discard any existing state\n"
-        "  -h, --help                    this help\n"
-        "  -v, --version                 print version\n"
+        "run '%s <mode> --help' for the options of a mode.\n"
         "\n"
-        "search options:\n"
-        "  -H, --hash <md5hex>           hash to look up, repeat\n"
-        "  -f, --file <file>             file of MD5 hashes to look up\n"
+        "flag convention (same meaning everywhere):\n"
+        "  -H, --hash <md5hex>    a hash value            (repeatable)\n"
+        "  -F, --hash-file <f>   file of hashes, one per line ('#' comments)\n"
+        "  -f, --file <f>        input file of this mode (same as -F in brute/search)\n"
+        "  -o, --out <f>         output file\n"
+        "  -c, --charset <spec>  charset: digits lower upper alpha alnum\n"
+        "                          hexlower hexupper special all,\n"
+        "                          joined with '+' (default: digits)\n"
+        "      --min <n>         minimum length (default: 1)\n"
+        "      --max <n>         maximum length (default: 6)\n"
+        "  -t, --threads <n>     worker threads (default: all cores)\n"
+        "  -s, --salt <str>      salt applied to every candidate\n"
+        "  -p, --salt-pos <pre|post>   salt placement (default: pre)\n"
+        "      --state <f>       state file: pause/resume a long run\n"
+        "      --fresh           ignore and delete an existing state file\n"
+        "  -h, --help            help for the mode\n"
+        "  -v, --version         print version\n"
         "\n"
         "examples:\n"
         "  %s digest -i hello\n"
-        "  %s digest -a sha256 -f data.bin\n"
-        "  %s brute -H 900150983cd24fb0d6963f7d28e17f72\n"
-        "  %s brute -f targets.txt -c lower+digits --max 6\n"
-        "  %s brute -H <hash> --state run.state -t 8\n"
-        "  %s map -o digs.hmmap -c digits --min 1 --max 4\n"
-        "  %s search -H 900150983cd24fb0d6963f7d28e17f72 digs.hmmap\n",
-        HM_VERSION, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-        prog, prog);
+        "  %s brute -H 202cb962ac59075b964b07152d234b70\n"
+        "  %s brute -F targets.txt -c lower+digits --max 6 --state run.state\n"
+        "  %s map -o digs.hmmap -c digits --max 4\n"
+        "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n",
+        HM_VERSION, prog, prog, prog, prog, prog, prog, prog);
 }
 
-static void usage_only(const char *prog)
+void hm_usage_digest(void)
 {
-    hm_usage_all(prog);
+    printf(
+        "usage: %s digest [options]\n"
+        "\n"
+        "hash a string or a file.\n"
+        "\n"
+        "  -a, --algo <md5|sha1|sha256>   algorithm (default: md5)\n"
+        "  -i, --input <string>           string to hash ('-' = every stdin line)\n"
+        "  -f, --file <file>              hash the whole file\n"
+        "  -s, --salt <string>            salt the input\n"
+        "  -p, --salt-pos <pre|post>      salt placement (default: pre)\n"
+        "  -h, --help                     this help\n"
+        "\n"
+        "examples:\n"
+        "  %s digest -i hello\n"
+        "  %s digest -a sha256 -i hello -s pepsi -p post\n"
+        "  %s digest -f data.bin\n"
+        "  printf 'a\\nb\\n' | %s digest -i -\n",
+        hm_prog, hm_prog, hm_prog, hm_prog, hm_prog);
+}
+
+void hm_usage_brute(void)
+{
+    printf(
+        "usage: %s brute -H <md5hex> | -F <file> [options]\n"
+        "\n"
+        "crack MD5 hashes by brute force over a keyspace.\n"
+        "\n"
+        "  -H, --hash <md5hex>        target hash (repeatable)\n"
+        "  -F, --hash-file <file>     file of hashes, one per line ('#' comments)\n"
+        "  -o, --out <file>           append cracked results to this file\n"
+        "  -c, --charset <spec>       charset (default: digits)\n"
+        "      --min <n>              minimum length (default: 1)\n"
+        "      --max <n>              maximum length (default: 6)\n"
+        "  -t, --threads <n>          worker threads (default: all cores)\n"
+        "  -s, --salt <string>        salt applied to every candidate\n"
+        "  -p, --salt-pos <pre|post>  salt placement (default: pre)\n"
+        "      --state <file>         state file: pause and resume a long run\n"
+        "      --fresh                ignore and delete an existing state file\n"
+        "  -h, --help                 this help\n"
+        "\n"
+        "examples:\n"
+        "  %s brute -H 202cb962ac59075b964b07152d234b70\n"
+        "  %s brute -H <hash> -c lower+digits --max 6 -t 8\n"
+        "  %s brute -F targets.txt -c alnum --max 5 --state run.state\n"
+        "  %s brute -H <hash> -s mycompany -p pre\n",
+        hm_prog, hm_prog, hm_prog, hm_prog, hm_prog);
+}
+
+void hm_usage_map(void)
+{
+    printf(
+        "usage: %s map -o <out.hmmap> [options]\n"
+        "\n"
+        "build a map file of a whole keyspace: one record per candidate,\n"
+        "holding its MD5 digest and its plaintext.\n"
+        "\n"
+        "  -o, --out <file>           map file to write (required)\n"
+        "  -c, --charset <spec>       charset (default: digits)\n"
+        "      --min <n>              minimum length (default: 1)\n"
+        "      --max <n>              maximum length (default: 6)\n"
+        "  -t, --threads <n>          worker threads (default: all cores)\n"
+        "  -s, --salt <string>        salt applied to every candidate\n"
+        "  -p, --salt-pos <pre|post>  salt placement (default: pre)\n"
+        "      --state <file>         state file (default: hashmap-map.state)\n"
+        "      --fresh                ignore and delete an existing state file\n"
+        "  -h, --help                 this help\n"
+        "\n"
+        "examples:\n"
+        "  %s map -o digs.hmmap -c digits --min 1 --max 4\n"
+        "  %s map -o digs.hmmap -c alnum --max 5 --state map.state\n",
+        hm_prog, hm_prog, hm_prog);
+}
+
+void hm_usage_search(void)
+{
+    printf(
+        "usage: %s search -H <md5hex> [-F <file>] <map.hmmap>\n"
+        "\n"
+        "look hashes up inside a map file written by '%s map'.\n"
+        "\n"
+        "  -H, --hash <md5hex>        hash to look up (repeatable)\n"
+        "  -F, --hash-file <file>     file of hashes, one per line\n"
+        "  -h, --help                 this help\n"
+        "\n"
+        "examples:\n"
+        "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
+        "  %s search -F targets.txt digs.hmmap\n",
+        hm_prog, hm_prog, hm_prog, hm_prog);
 }
 
 int main(int argc, char **argv)
 {
-    const char *prog = argv[0] != NULL ? argv[0] : "hashmap";
+    if (argc > 0 && argv[0] != NULL)
+        hm_prog = argv[0];
 
     /* SIGINT/SIGTERM => graceful stop + state save */
     hm_sig_setup();
 
     if (argc < 2) {
-        usage_only(prog);
+        hm_usage_all(hm_prog);
         return 2;
     }
     const char *mode = argv[1];
 
-    if (strcmp(mode, "-h") == 0 || strcmp(mode, "--help") == 0) {
-        usage_only(prog);
+    if (strcmp(mode, "-h") == 0 || strcmp(mode, "--help") == 0 ||
+        strcmp(mode, "help") == 0) {
+        hm_usage_all(hm_prog);
         return 0;
     }
     if (strcmp(mode, "-v") == 0 || strcmp(mode, "--version") == 0) {
@@ -103,9 +183,9 @@ int main(int argc, char **argv)
         rc = hm_mode_search(argc - 1, argv + 1);
     else {
         fprintf(stderr,
-                "[-] unknown mode '%s' (use digest|brute|map|search, see "
-                "--help)\n",
+                "[-] unknown mode '%s' (modes: digest, brute, map, search)\n",
                 mode);
+        fprintf(stderr, "[-] run '%s --help' for usage\n", hm_prog);
         return 2;
     }
     return rc;

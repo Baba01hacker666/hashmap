@@ -26,25 +26,36 @@ int hm_mode_map(int argc, char **argv)
     hm_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
 
-    if (hm_opts_common(argc, argv, &cfg, false) < 0)
+    int prc = hm_opts_common(argc, argv, &cfg, false);
+    if (prc == 1) { /* -h */
+        hm_usage_map();
+        return 0;
+    }
+    if (prc < 0) {
+        hm_usage_map();
         return 2;
+    }
     if (cfg.minlen > cfg.maxlen) {
         fprintf(stderr, "[-] invalid length range %d-%d\n", cfg.minlen,
                 cfg.maxlen);
         return 2;
     }
+    if (cfg.out_path[0] == '\0') {
+        fprintf(stderr, "[-] map mode needs an output file: -o <out.hmmap>\n");
+        hm_usage_map();
+        return 2;
+    }
     if (cfg.state_path[0] == '\0') {
-        /* map resumes like brute; give it a default state when writing a
-         * real output file so long jobs can continue across runs */
+        /* map resumes like brute; give it a default state so long jobs can
+         * continue across runs */
         snprintf(cfg.state_path, sizeof(cfg.state_path), "hashmap-map.state");
     }
 
     cfg.rec = fopen(cfg.out_path, "wb");
     if (cfg.rec == NULL) {
-        fprintf(stderr,
-                "[-] map mode needs -o <out.hmmap> (writable): %s\n",
+        fprintf(stderr, "[-] cannot write %s: %s\n", cfg.out_path,
                 strerror(errno));
-        return 2;
+        return 1;
     }
     if (fwrite(HM_MAP_MAGIC, 1, strlen(HM_MAP_MAGIC), cfg.rec) !=
         strlen(HM_MAP_MAGIC)) {

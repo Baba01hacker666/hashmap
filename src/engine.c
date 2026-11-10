@@ -1054,7 +1054,8 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
 {
     static const hm_longopt_t lopts[] = {
         { "hash", 1, 'H' },
-        { "file", 1, 'f' },
+        { "hash-file", 1, 'F' },
+        { "file", 1, 'F' },
         { "charset", 1, 'c' },
         { "min", 1, 1 },
         { "max", 1, 2 },
@@ -1064,6 +1065,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "out", 1, 'o' },
         { "state", 1, 3 },
         { "fresh", 0, 4 },
+        { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     int opt;
@@ -1079,7 +1081,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
     cfg->ntargets = 0;
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:f:c:t:s:p:o:", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:f:c:t:s:p:o:h", lopts)) != -1) {
         switch (opt) {
         case 'H':
             if (!want_targets) {
@@ -1094,9 +1096,11 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 return -1;
             cfg->ntargets++;
             break;
-        case 'f':
+        case 'F':
+        case 'f': /* -F/--hash-file and -f/--file: same thing here */
             if (!want_targets) {
-                fprintf(stderr, "[-] -f not valid in this mode\n");
+                fprintf(stderr,
+                        "[-] -F/--hash-file is not valid in this mode\n");
                 return -1;
             }
             if (hm_load_targets(hm_optarg, cfg->targets, &cfg->ntargets) < 0)
@@ -1161,7 +1165,10 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 remove(cfg->state_path);
             cfg->state_path[0] = '\0';
             break;
+        case 'h': /* help requested */
+            return 1;
         default:
+            fprintf(stderr, "[-] unknown option\n");
             return -1;
         }
     }

@@ -49,10 +49,11 @@ typedef struct {
  * *finished is set when the whole configured keyspace was covered. */
 int hm_engine_run(hm_cfg_t *cfg, int *finished);
 
-/* shared option parser for brute/map modes. parses -H/-f/-c/-t/-s/-p/-o,
+/* shared option parser for brute/map modes. parses -H/-F/-c/-t/-s/-p/-o,
  * --min/--max/--state/--fresh into cfg (targets appended to cfg->targets,
- * caller allocates HM_MAX_TARGETS slots). want_targets=false rejects -H/-f
- * (map mode). returns 0 on success, -1 on error (message already printed). */
+ * caller allocates HM_MAX_TARGETS slots). want_targets=false rejects -H/-F
+ * (map mode). returns 0 on success, 1 when help was requested (-h),
+ * -1 on error (message already printed). */
 int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets);
 
 /* parse a 32-char MD5 hex string into target (both fill bytes and hex) */

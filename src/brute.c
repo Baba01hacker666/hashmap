@@ -24,8 +24,15 @@ int hm_mode_brute(int argc, char **argv)
         fprintf(stderr, "[-] out of memory\n");
         return 1;
     }
-    if (hm_opts_common(argc, argv, &cfg, true) < 0) {
+    int prc = hm_opts_common(argc, argv, &cfg, true);
+    if (prc == 1) { /* -h */
+        hm_usage_brute();
         free(cfg.targets);
+        return 0;
+    }
+    if (prc < 0) {
+        free(cfg.targets);
+        hm_usage_brute();
         return 2;
     }
     if (hm_optind < argc) {
