@@ -1,0 +1,6 @@
+hashmap
+*.o
+*.d
+bench*.txt
+targets*.txt
+cracked*.txt
