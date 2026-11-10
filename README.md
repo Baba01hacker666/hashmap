@@ -123,8 +123,23 @@ The farm workflow runs on a schedule (every 6 hours) or on demand:
 gh workflow run farm.yml -f hash=<md5> -f charset=alnum -f max=7 -f minutes=300
 ```
 
+Each run reports how many candidates were tried, how long it ran and the average
+speed, and leaves the state file as an artifact for the next run.
+
 Set the repository variable `FARM_HASH` (and optionally `FARM_SALT`) to let the
 scheduled runs pick up a target automatically.
+
+## Commit hygiene (no co-author trailers)
+
+This repo does not accept `Co-Authored-By:` trailers. The guard ships with it:
+
+```sh
+make install-hooks      # git config core.hooksPath .githooks
+```
+
+After that, any commit message containing a `Co-Authored-By:` (or an AI-assistant
+attribution trailer) is rejected before it can be created. The same check runs on
+GitHub CLI bodies (PR / issue / release) through the `gh` wrapper.
 
 ## Charsets
 
@@ -134,13 +149,21 @@ scheduled runs pick up a target automatically.
 | `lower` | `a-z` |
 | `upper` | `A-Z` |
 | `alpha` | `a-zA-Z` |
-| `alnum` | `a-zA-Z0-9` |
+| `alnum` / `default` | `a-zA-Z0-9` |
 | `hexlower` / `hexupper` | `0-9a-f` / `0-9A-F` |
-| `special` | ASCII punctuation |
-| `all` | alnum + special + space |
+| `special` / `symbols` | ASCII punctuation — includes `@` and `!` |
+| `all` / `full` | alnum + punctuation + space (95 chars) |
 
 Combine any of them with `+` (e.g. `lower+digits`); anything that is not a builtin
-name is taken as literal characters.
+name is taken as literal characters. `-c` may be repeated — the specs are unioned:
+
+```sh
+hashmap brute -H <hash> -c lower -c digits      # same as -c lower+digits
+hashmap brute -H <hash> -c 'a\@b\!c'            # literal a @ b ! c
+```
+
+`\` escapes the next character (`\!` = literal `!`, `\+` = literal `+`). Duplicate
+characters are dropped automatically, so the keyspace is never inflated.
 
 ## Layout
 

@@ -1069,9 +1069,10 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { NULL, 0, 0 }
     };
     int opt;
-    bool have_cs = false;
     bool have_out = false;
-    char cs_buf[HM_MAX_CS + 1];
+    char cs_specs[8][HM_MAX_CS + 1];
+    int ncs = 0;
+    char *cs_ptrs[8];
     size_t cs_buflen = 0;
     int cores = hm_cpu_count();
 
@@ -1107,12 +1108,18 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 return -1;
             break;
         case 'c':
-            have_cs = true;
+            if (ncs >= (int)(sizeof(cs_specs) / sizeof(cs_specs[0]))) {
+                fprintf(stderr, "[-] too many --charset options (max %d)\n",
+                        (int)(sizeof(cs_specs) / sizeof(cs_specs[0])));
+                return -1;
+            }
             if (strlen(hm_optarg) > HM_MAX_CS) {
                 fprintf(stderr, "[-] charset too long (max %d)\n", HM_MAX_CS);
                 return -1;
             }
-            snprintf(cs_buf, sizeof(cs_buf), "%s", hm_optarg);
+            snprintf(cs_specs[ncs], sizeof(cs_specs[0]), "%s", hm_optarg);
+            cs_ptrs[ncs] = cs_specs[ncs];
+            ncs++;
             break;
         case 1: /* min */
             if (sscanf(hm_optarg, "%d", &cfg->minlen) != 1 ||
@@ -1173,10 +1180,13 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         }
     }
 
-    if (!have_cs)
-        strcpy(cs_buf, "digits");
-    if (hm_build_charset(cs_buf, cfg->cs, &cs_buflen) < 0) {
-        fprintf(stderr, "[-] broken/empty charset spec '%s'\n", cs_buf);
+    if (ncs == 0) {
+        cs_ptrs[0] = cs_specs[0];
+        snprintf(cs_specs[0], sizeof(cs_specs[0]), "digits");
+        ncs = 1;
+    }
+    if (hm_build_charset_multi(ncs, cs_ptrs, cfg->cs, &cs_buflen) < 0) {
+        fprintf(stderr, "[-] broken/empty charset spec\n");
         return -1;
     }
     cfg->cslen = (int)cs_buflen;

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# hashmap - commit-msg hook: block Co-Authored-By / AI attribution trailers
+#
+# Install with:  make install-hooks
+# (or: git config core.hooksPath .githooks)
+
+msg_file="$1"
+[ -n "$msg_file" ] || exit 0
+[ -f "$msg_file" ] || exit 0
+
+reason=""
+if grep -qiE '^[[:space:]]*co-authored-by[[:space:]]*:' "$msg_file"; then
+    reason="Co-Authored-By trailers are not allowed in this repository."
+elif grep -qiE '^[[:space:]]*(co-developed-by|signed-off-by|generated-by|reviewed-by|helped-by)[[:space:]]*:.*(claude|anthropic|copilot|chatgpt|openai|gemini|gpt-?[0-9])' "$msg_file"; then
+    reason="AI-assistant attribution trailers are not allowed in this repository."
+fi
+
+if [ -n "$reason" ]; then
+    {
+        echo
+        echo "========================================"
+        echo " Commit blocked"
+        echo "========================================"
+        echo
+        echo " $reason"
+        echo
+        echo "Offending line(s):"
+        echo
+        grep -iE '^[[:space:]]*(co-authored-by|co-developed-by|signed-off-by|generated-by|reviewed-by|helped-by)[[:space:]]*:' "$msg_file" | sed 's/^/   /'
+        echo
+        echo "Remove the trailer and commit again."
+        echo "========================================"
+        echo
+    } >&2
+    exit 1
+fi
+exit 0

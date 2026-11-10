@@ -236,6 +236,35 @@ done
 [ $? -eq 2 ] && ok "unknown option exits 2" || bad "unknown option exits 2"
 
 # ------------------------------------------------------------------
+head_ "charset"
+# ------------------------------------------------------------------
+cs_size() {
+    "$BIN" brute -H 00000000000000000000000000000000 -c "$1" --max 1 2>&1 \
+        | sed -n 's/.*charset: (\([0-9]*\) chars).*/\1/p'
+}
+[ "$(cs_size digits)" = "10" ] && ok "charset digits" || bad "charset digits"
+[ "$(cs_size lower)" = "26" ] && ok "charset lower" || bad "charset lower"
+[ "$(cs_size alnum)" = "62" ] && ok "charset alnum" || bad "charset alnum"
+[ "$(cs_size 'lower+digits')" = "36" ] && ok "charset combo" || bad "charset combo"
+[ "$(cs_size default)" = "62" ] && ok "charset default preset" || bad "charset default preset"
+[ "$(cs_size all)" = "95" ] && ok "charset all preset" || bad "charset all preset"
+
+# union of repeated -c
+u="$("$BIN" brute -H 00000000000000000000000000000000 -c lower -c digits --max 1 2>&1 \
+     | sed -n 's/.*charset: (\([0-9]*\) chars).*/\1/p')"
+[ "$u" = "36" ] && ok "charset union via repeated -c" || bad "charset union via repeated -c"
+
+# escapes for literal ! and @
+e="$("$BIN" brute -H 00000000000000000000000000000000 -c 'a\@b\!c' --max 1 2>&1 \
+     | sed -n 's/.*charset: (\([0-9]*\) chars).*/\1/p')"
+[ "$e" = "5" ] && ok "charset escapes (\\! \\@)" || bad "charset escapes (\\! \\@)"
+
+# duplicates are removed (a repeated char must not inflate the keyspace)
+d="$("$BIN" brute -H 00000000000000000000000000000000 -c 'aa' --max 2 2>&1 \
+     | sed -n 's/.*charset: (\([0-9]*\) chars).*/\1/p')"
+[ "$d" = "1" ] && ok "charset de-duplicates" || bad "charset de-duplicates"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0

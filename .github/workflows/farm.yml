@@ -131,10 +131,12 @@ jobs:
             args="$args -s $CFG_SALT -p $CFG_SALTPOS"
           fi
           echo "running: ./hashmap $args"
-          # SIGTERM at the time limit -> hashmap saves its state and exits
+          # SIGTERM at the time limit -> hashmap saves its state and exits.
+          # \r is translated to \n so the progress lines stay readable.
           set +e
-          timeout -s TERM "${CFG_MINUTES}m" ./hashmap $args | tee "$FARM_DIR/log.txt"
-          rc=$?
+          timeout -s TERM "${CFG_MINUTES}m" ./hashmap $args 2>&1 | tr '\r' '\n' \
+              | tee "$FARM_DIR/log.txt"
+          rc=${PIPESTATUS[0]}
           set -e
           echo "exit=$rc" >> "$GITHUB_OUTPUT"
           if [ -f "$FARM_DIR/farm.state" ]; then
@@ -143,16 +145,55 @@ jobs:
             echo "no state file: the run either finished or found nothing left"
           fi
 
-      - name: Summary
+      - name: Report
+        id: report
         run: |
+          set -eu
+          log="$FARM_DIR/log.txt"
+          tried=""
+          elapsed=""
+          rate=""
+          progress=""
+          if [ -f "$log" ]; then
+            tried="$(grep -oE 'done: [0-9,]+ candidates' "$log" | tail -1 \
+                     | grep -oE '[0-9,]+' | tr -d ',' || true)"
+            elapsed="$(grep -oE 'in [0-9.]+s' "$log" | tail -1 \
+                      | grep -oE '[0-9.]+' || true)"
+            rate="$(grep -oE '\([0-9.]+ [kMG]?H/s avg\)' "$log" | tail -1 \
+                   | tr -d '()' || true)"
+            progress="$(grep -E '^\[\*\] len ' "$log" | tail -1 || true)"
+          fi
+          echo "tried=${tried:-0}" >> "$GITHUB_OUTPUT"
+          echo "elapsed=${elapsed:-0}" >> "$GITHUB_OUTPUT"
+          echo "rate=${rate:-n/a}" >> "$GITHUB_OUTPUT"
+          echo "progress=${progress:-}" >> "$GITHUB_OUTPUT"
           {
             echo '### farm run'
             echo ''
-            echo '```'
-            tail -n 20 "$FARM_DIR/log.txt" 2>/dev/null || true
-            echo '```'
+            echo "| metric | value |"
+            echo '|--------|-------|'
+            echo "| target | \`${{ steps.cfg.outputs.hash }}\` |"
+            echo "| charset | \`${{ steps.cfg.outputs.charset }}\` |"
+            echo "| lengths | ${{ steps.cfg.outputs.min }}-${{ steps.cfg.outputs.max }} |"
+            echo "| tried | ${tried:-0} candidates |"
+            echo "| time | ${elapsed:-0} s |"
+            echo "| average speed | ${rate:-n/a} |"
+            echo "| threads | ${{ steps.cfg.outputs.threads }} |"
             echo ''
-            if [ -f "$FARM_DIR/found.txt" ]; then
+            if [ -n "$progress" ]; then
+              echo 'last progress line:'
+              echo '```'
+              echo "$progress"
+              echo '```'
+              echo ''
+            fi
+            if [ -f "$FARM_DIR/farm.state" ]; then
+              echo 'state saved - the next run continues from here.'
+            else
+              echo 'no state file - the keyspace is exhausted or the target was found.'
+            fi
+            if [ -s "$FARM_DIR/found.txt" ]; then
+              echo ''
               echo '**cracked:**'
               echo '```'
               cat "$FARM_DIR/found.txt"

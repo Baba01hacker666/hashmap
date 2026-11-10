@@ -16,7 +16,7 @@ HARD_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 OPT_FAST := -O3 -march=native -flto -pthread -D_FORTIFY_SOURCE=2
 INC := -Isrc
 
-.PHONY: all clean debug portable test install
+.PHONY: all clean debug portable test install install-hooks
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -45,6 +45,12 @@ test: $(BIN)
 install: $(BIN)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/hashmap
+
+# enable the co-author guard hooks for this clone
+install-hooks:
+	@chmod +x .githooks/commit-msg .githooks/prepare-commit-msg
+	@git config core.hooksPath .githooks
+	@echo "hooks enabled: Co-Authored-By trailers are now blocked"
 
 clean:
 	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable

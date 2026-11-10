@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# hashmap - prepare-commit-msg hook: early rejection of Co-Authored-By trailers
+#
+# Install with:  make install-hooks
+
+msg_file="$1"
+[ -n "$msg_file" ] || exit 0
+[ -f "$msg_file" ] || exit 0
+
+exec "$(dirname "$0")/commit-msg" "$msg_file"
