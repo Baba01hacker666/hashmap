@@ -203,6 +203,39 @@ rm -f "$STATE"
 [ ! -e "$STATE" ] && ok "state removed on completion" || bad "state removed on completion"
 
 # ------------------------------------------------------------------
+head_ "cli"
+# ------------------------------------------------------------------
+"$BIN" --help >/dev/null 2>&1
+[ $? -eq 0 ] && ok "hashmap --help exits 0" || bad "hashmap --help exits 0"
+"$BIN" -v >/dev/null 2>&1
+[ $? -eq 0 ] && ok "hashmap -v exits 0" || bad "hashmap -v exits 0"
+
+for mode in digest brute map search; do
+    "$BIN" "$mode" --help >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "hashmap $mode --help exits 0" \
+        || bad "hashmap $mode --help exits 0"
+done
+
+# -F / -f / --hash-file / --file all mean "file of hashes" in brute+search
+printf '# comment\n%s\n' "$H123" > "$TMP/hashes.txt"
+for flag in -F -f --hash-file --file; do
+    "$BIN" brute $flag "$TMP/hashes.txt" -c digits --max 4 >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "brute $flag <hashfile>" || bad "brute $flag <hashfile>"
+done
+
+# --opt=value form
+"$BIN" brute --hash="$H123" --charset=digits --max=4 >/dev/null 2>&1
+[ $? -eq 0 ] && ok "brute --opt=value form" || bad "brute --opt=value form"
+
+# map mode without -o explains itself
+"$BIN" map >/dev/null 2>&1
+[ $? -eq 2 ] && ok "map without -o exits 2" || bad "map without -o exits 2"
+
+# unknown option is rejected
+"$BIN" brute --definitely-not-an-option >/dev/null 2>&1
+[ $? -eq 2 ] && ok "unknown option exits 2" || bad "unknown option exits 2"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0
