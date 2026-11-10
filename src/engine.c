@@ -835,6 +835,10 @@ static int wlist_load(const char *path, size_t *bytes_out)
         if (buf[i] == '\n')
             nlines++;
     }
+    if (sz > 0 && buf[sz - 1] == '\n')
+        nlines--; /* the file ends with a newline: no extra empty line */
+    if (nlines < 1)
+        nlines = 1;
     offs = malloc((nlines + 1) * sizeof(size_t));
     if (offs == NULL) {
         fprintf(stderr, "[-] out of memory (wordlist index)\n");
