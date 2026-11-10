@@ -1,0 +1,169 @@
+name: farm
+
+# A long keyspace search that cannot finish inside one runner session.
+# Every run picks up the state file left by the previous run, works for a
+# bounded amount of time, saves a fresh state file and uploads it as an
+# artifact - so the job keeps grinding across runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hash:
+        description: 'target MD5 hash to crack'
+        required: true
+      charset:
+        description: 'charset spec (digits, lower+digits, alnum, ...)'
+        required: false
+        default: 'digits'
+      min:
+        description: 'min length'
+        required: false
+        default: '1'
+      max:
+        description: 'max length'
+        required: false
+        default: '8'
+      salt:
+        description: 'salt (optional)'
+        required: false
+        default: ''
+      saltpos:
+        description: 'salt position (pre|post)'
+        required: false
+        default: 'pre'
+      minutes:
+        description: 'minutes to work in this run'
+        required: false
+        default: '300'
+      threads:
+        description: 'worker threads'
+        required: false
+        default: '4'
+  schedule:
+    # every 6 hours - the farm keeps resuming on its own
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  FARM_DIR: farm
+
+jobs:
+  farm:
+    name: grind keyspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve settings
+        id: cfg
+        env:
+          IN_HASH: ${{ inputs.hash || vars.FARM_HASH }}
+          IN_CHARSET: ${{ inputs.charset || 'digits' }}
+          IN_MIN: ${{ inputs.min || '1' }}
+          IN_MAX: ${{ inputs.max || '8' }}
+          IN_SALT: ${{ inputs.salt || vars.FARM_SALT || '' }}
+          IN_SALTPOS: ${{ inputs.saltpos || 'pre' }}
+          IN_MINUTES: ${{ inputs.minutes || '300' }}
+          IN_THREADS: ${{ inputs.threads || '4' }}
+        run: |
+          set -eu
+          echo "hash=$IN_HASH" >> "$GITHUB_OUTPUT"
+          echo "charset=$IN_CHARSET" >> "$GITHUB_OUTPUT"
+          echo "min=$IN_MIN" >> "$GITHUB_OUTPUT"
+          echo "max=$IN_MAX" >> "$GITHUB_OUTPUT"
+          echo "salt=$IN_SALT" >> "$GITHUB_OUTPUT"
+          echo "saltpos=$IN_SALTPOS" >> "$GITHUB_OUTPUT"
+          echo "minutes=$IN_MINUTES" >> "$GITHUB_OUTPUT"
+          echo "threads=$IN_THREADS" >> "$GITHUB_OUTPUT"
+          if [ -z "$IN_HASH" ]; then
+            echo "no target hash configured - set the dispatch input or the"
+            echo "FARM_HASH repository variable"
+          fi
+
+      - name: Build
+        run: make
+
+      - name: Restore previous state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p "$FARM_DIR"
+          prev="$(gh run list --workflow farm.yml --status completed \
+                   --limit 1 --json databaseId \
+                   --jq '.[0].databaseId // empty' || true)"
+          if [ -n "$prev" ]; then
+            echo "previous farm run: $prev"
+            gh run download "$prev" -n farm-state -D "$FARM_DIR" || \
+              echo "no farm-state artifact in run $prev (starting fresh)"
+          else
+            echo "no previous farm run found (starting fresh)"
+          fi
+          ls -l "$FARM_DIR" || true
+
+      - name: Grind
+        id: grind
+        env:
+          CFG_HASH: ${{ steps.cfg.outputs.hash }}
+          CFG_CHARSET: ${{ steps.cfg.outputs.charset }}
+          CFG_MIN: ${{ steps.cfg.outputs.min }}
+          CFG_MAX: ${{ steps.cfg.outputs.max }}
+          CFG_SALT: ${{ steps.cfg.outputs.salt }}
+          CFG_SALTPOS: ${{ steps.cfg.outputs.saltpos }}
+          CFG_MINUTES: ${{ steps.cfg.outputs.minutes }}
+          CFG_THREADS: ${{ steps.cfg.outputs.threads }}
+        run: |
+          set -eu
+          if [ -z "$CFG_HASH" ]; then
+            echo "::notice::no target hash - nothing to grind"
+            echo "done=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$FARM_DIR"
+          args="brute -H $CFG_HASH -c $CFG_CHARSET --min $CFG_MIN --max $CFG_MAX"
+          args="$args -t $CFG_THREADS --state $FARM_DIR/farm.state -o $FARM_DIR/found.txt"
+          if [ -n "$CFG_SALT" ]; then
+            args="$args -s $CFG_SALT -p $CFG_SALTPOS"
+          fi
+          echo "running: ./hashmap $args"
+          # SIGTERM at the time limit -> hashmap saves its state and exits
+          set +e
+          timeout -s TERM "${CFG_MINUTES}m" ./hashmap $args | tee "$FARM_DIR/log.txt"
+          rc=$?
+          set -e
+          echo "exit=$rc" >> "$GITHUB_OUTPUT"
+          if [ -f "$FARM_DIR/farm.state" ]; then
+            echo "state saved - next run resumes from here"
+          else
+            echo "no state file: the run either finished or found nothing left"
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo '### farm run'
+            echo ''
+            echo '```'
+            tail -n 20 "$FARM_DIR/log.txt" 2>/dev/null || true
+            echo '```'
+            echo ''
+            if [ -f "$FARM_DIR/found.txt" ]; then
+              echo '**cracked:**'
+              echo '```'
+              cat "$FARM_DIR/found.txt"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload state for the next run
+        uses: actions/upload-artifact@v4
+        with:
+          name: farm-state
+          path: ${{ env.FARM_DIR }}
+          if-no-files-found: ignore
+          retention-days: 30

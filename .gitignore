@@ -1,6 +1,10 @@
 hashmap
+hashmap-debug
+hashmap-portable
 *.o
 *.d
 bench*.txt
 targets*.txt
 cracked*.txt
+*.state
+*.hmmap

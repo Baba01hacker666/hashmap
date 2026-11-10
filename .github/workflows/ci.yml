@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strict:
+    name: strict build + tests (gcc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with maximum warnings as errors
+        run: make clean && make
+      - name: Run test suite
+        run: ./tests/run.sh ./hashmap
+      - name: Portable static build
+        run: make portable
+      - name: Sanitizer build
+        run: make debug
+      - name: Run test suite under ASan/UBSan
+        run: ./tests/run.sh ./hashmap-debug
+
+  clang:
+    name: strict build (clang)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+          make clean
+          make CC=clang
+      - name: Run test suite
+        run: ./tests/run.sh ./hashmap
+
+  macos:
+    name: build (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Quick test
+        run: ./tests/run.sh ./hashmap

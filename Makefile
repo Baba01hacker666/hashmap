@@ -1,23 +1,52 @@
+# hashmap - multithreaded hash toolkit
+#
+# MIT License - Copyright (c) 2026 baba01hacker666
+
 CC      ?= cc
-CFLAGS  ?= -O3 -march=native -mtune=native -flto -funroll-loops \
-           -std=c11 -Wall -Wextra -Wpedantic
-LDLIBS   = -lpthread -lm
-BIN      = hashmap
+MODULES  := util charset crypto engine brute digest map search main
+SRCS     := $(MODULES:%=src/%.c)
+OBJS     := $(SRCS:.c=.o)
+DEPS     := $(OBJS:.o=.d)
+BIN      := hashmap
 
-build: $(BIN)
+HARD_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
+               -Wshadow -Wcast-align -Wstrict-prototypes \
+               -Wmissing-prototypes -Wundef -Wformat=2 \
+               -Wdouble-promotion -Wconversion -Wsign-conversion
+OPT_FAST := -O3 -march=native -flto -pthread -D_FORTIFY_SOURCE=2
+INC := -Isrc
 
-$(BIN): src/$(BIN).c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+.PHONY: all clean debug portable test install
 
-# portable build (no -march=native) for release tarballs
-portable:
-	$(CC) -O3 -flto -funroll-loops -std=c11 -Wall -Wextra -Wpedantic \
-		$(LDFLAGS) -o $(BIN) src/$(BIN).c $(LDLIBS)
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+all: $(BIN)
+
+$(BIN): $(OBJS)
+	$(CC) $(OPT_FAST) -o $@ $(OBJS)
+
+%.o: %.c
+	$(CC) $(HARD_CFLAGS) $(INC) -O3 -MMD -MP -c $< -o $@
+
+# sanitizer build (exact same strict warnings)
+debug: HM_CFLAGS := $(HARD_CFLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -pthread
+debug: $(SRCS)
+	$(CC) $(HM_CFLAGS) $(INC) -fPIC -o $(BIN)-debug $(SRCS)
+
+# portable static-ish build for release artifacts (no -march=native/lto)
+portable: HM_CFLAGS := $(HARD_CFLAGS) -O2 -fPIE -pthread -static
+portable: $(SRCS)
+	$(CC) $(HM_CFLAGS) $(INC) -o $(BIN)-portable $(SRCS)
+
+test: $(BIN)
+	@./tests/run.sh
 
 install: $(BIN)
-	install -Dm755 $(BIN) $(PREFIX)/bin/$(BIN)
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/hashmap
 
 clean:
-	rm -f $(BIN)
+	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable
 
-.PHONY: build portable install clean
+-include $(DEPS)
