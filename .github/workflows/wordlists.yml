@@ -144,14 +144,21 @@ jobs:
         run: |
           set -eu
           mkdir -p "$FARM_DIR"
-          printf '%s\n' "${{ inputs.hashes }}" | tr ' ,' '\n\n' \
-              | grep -Eo '[0-9a-fA-F]{32}' | tr 'A-F' 'a-f' \
+          # one hash per line: 32 hex = md5, 64 hex = sha256
+          printf '%s\n' "${{ inputs.hashes }}" \
+              | awk '{ gsub(/[^0-9a-fA-F]/, ""); n = length($0);
+                      if (n == 32 || n == 64) print tolower($0) }' \
               | sort -u > "$FARM_DIR/hashes.txt" || true
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
           echo "looking up $total hash(es)"
+          if grep -qE '^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt"; then
+            map="$FARM_DIR/wordlist-map-sha256.hmmap"
+          else
+            map="$FARM_DIR/wordlist-map.hmmap"
+          fi
           set +e
           ./hashmap search -F "$FARM_DIR/hashes.txt" \
-              "$FARM_DIR/wordlist-map.hmmap" -o "$FARM_DIR/results.txt"
+              "$map" -o "$FARM_DIR/results.txt"
           set -e
           if [ -s "$FARM_DIR/results.txt" ]; then
             echo "cracked:"
