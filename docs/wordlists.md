@@ -92,6 +92,11 @@ publishes both in the cloud:
 |---------|-------|---------|
 | `wordlists` | `combined.txt` | the deduplicated list (323 MB) |
 | `maps` | `wordlist-map.hmmap` | every candidate with its MD5 digest (880 MB) |
+| `maps` | `wordlist-map-sha256.hmmap` | the same with a SHA-256 digest, truncated to 16 bytes (880 MB) |
+
+The SHA-256 map stores only the first 16 bytes of each digest
+(`--truncate 16`), so it is exactly as big as the MD5 one while still
+matching with a 2^-128 probability.
 
 Later runs **download** what is published instead of rebuilding it:
 

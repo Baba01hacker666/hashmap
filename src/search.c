@@ -18,12 +18,14 @@
 #include "hashmap.h"
 #include "util.h"
 
-#define HM_MAP_MAGIC "HMMAP 1\n"
+#define HM_MAP_MAGIC "HMMAP 2\n"
 #define HM_MAP_MAGIC_LEN (sizeof(HM_MAP_MAGIC) - 1)
+#define HM_MAP_MAGIC_V1 "HMMAP 1\n"
+#define HM_MAP_MAX_HDR 64
 
 typedef struct {
-    uint8_t bytes[16];
-    char hex[33];
+    uint8_t bytes[32];
+    char hex[65];
     int found;
 } want_t;
 
@@ -124,31 +126,63 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
 {
     FILE *f = fopen(path, "rb");
     char magic[HM_MAP_MAGIC_LEN];
+    int dlen = 16;
 
     if (f == NULL) {
         fprintf(stderr, "[-] cannot open %s: %s\n", path, strerror(errno));
         return -1;
     }
-    if (fread(magic, 1, HM_MAP_MAGIC_LEN, f) != HM_MAP_MAGIC_LEN ||
-        memcmp(magic, HM_MAP_MAGIC, HM_MAP_MAGIC_LEN) != 0) {
-        fprintf(stderr, "[-] %s is not a hashmap map file (missing HMMAP 1 "
-                        "header)\n", path);
+    if (fread(magic, 1, HM_MAP_MAGIC_LEN, f) != HM_MAP_MAGIC_LEN) {
+        fprintf(stderr, "[-] %s is not a hashmap map file (missing "
+                        "header)\n",
+                path);
+        fclose(f);
+        return -1;
+    }
+    if (memcmp(magic, HM_MAP_MAGIC_V1, HM_MAP_MAGIC_LEN) == 0) {
+        dlen = 16; /* v1 maps: md5 with a 16 byte digest */
+    } else if (memcmp(magic, HM_MAP_MAGIC, HM_MAP_MAGIC_LEN) == 0) {
+        char line[HM_MAP_MAX_HDR];
+        bool seen = false;
+
+        while (fgets(line, sizeof(line), f) != NULL) {
+            char *nl = strpbrk(line, "\r\n");
+
+            if (nl != NULL)
+                *nl = '\0';
+            if (strncmp(line, "dlen ", 5) == 0) {
+                dlen = atoi(line + 5);
+                seen = true;
+                break;
+            }
+            if (line[0] == '\0')
+                break;
+        }
+        if (!seen || dlen < 1 || dlen > 32) {
+            fprintf(stderr, "[-] %s has a broken header\n", path);
+            fclose(f);
+            return -1;
+        }
+    } else {
+        fprintf(stderr, "[-] %s is not a hashmap map file (missing "
+                        "header)\n",
+                path);
         fclose(f);
         return -1;
     }
 
     for (;;) {
-        uint8_t rec[17];
-        size_t got = fread(rec, 1, 17, f);
+        uint8_t rec[33];
+        size_t got = fread(rec, 1, (size_t)dlen + 1, f);
 
         if (got == 0)
             break; /* clean EOF */
-        if (got != 17) {
+        if (got != (size_t)dlen + 1) {
             fprintf(stderr, "[-] truncated map record in %s\n", path);
             fclose(f);
             return -1;
         }
-        int plen = rec[16];
+        int plen = rec[dlen];
         if (plen < 1 || plen > HM_MAX_PLAIN) {
             fprintf(stderr, "[-] bad record length in %s (corrupt map?)\n",
                     path);
@@ -167,7 +201,7 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
         for (int i = 0; i < nwants; i++) {
             if (wants[i].found)
                 continue;
-            if (memcmp(wants[i].bytes, rec, 16) == 0) {
+            if (memcmp(wants[i].bytes, rec, (size_t)dlen) == 0) {
                 printf("%s:%s\n", wants[i].hex, plain);
                 if (outf != NULL) {
                     fprintf(outf, "%s:%s\n", wants[i].hex, plain);
@@ -221,8 +255,8 @@ int hm_mode_search(int argc, char **argv)
             }
             if (hm_parse_target(hm_optarg, &tg) < 0)
                 goto out;
-            memcpy(wants[nwants].bytes, tg.bytes, 16);
-            memcpy(wants[nwants].hex, tg.hex, 33);
+            memcpy(wants[nwants].bytes, tg.bytes, strlen(tg.hex) / 2);
+            memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
             wants[nwants].found = 0;
             nwants++;
             break;
@@ -245,8 +279,9 @@ int hm_mode_search(int argc, char **argv)
                 goto out;
             }
             for (int i = 0; i < nt; i++) {
-                memcpy(wants[nwants].bytes, tgs[i].bytes, 16);
-                memcpy(wants[nwants].hex, tgs[i].hex, 33);
+                memcpy(wants[nwants].bytes, tgs[i].bytes,
+                       strlen(tgs[i].hex) / 2);
+                memcpy(wants[nwants].hex, tgs[i].hex, strlen(tgs[i].hex) + 1);
                 wants[nwants].found = 0;
                 nwants++;
             }

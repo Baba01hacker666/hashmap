@@ -20,7 +20,8 @@
 #include "hashmap.h"
 #include "util.h"
 
-#define HM_MAP_MAGIC "HMMAP 1\n"
+#define HM_MAP_MAGIC "HMMAP 2\n"
+#define HM_MAP_MAGIC_V1 "HMMAP 1\n"
 
 /* does the file exist and start with the map magic? */
 static int map_file_valid(const char *path)
@@ -34,7 +35,10 @@ static int map_file_valid(const char *path)
         return 0;
     n = fread(magic, 1, want, f);
     fclose(f);
-    return (n == want && memcmp(magic, HM_MAP_MAGIC, want) == 0);
+    if (n == want && memcmp(magic, HM_MAP_MAGIC, want) == 0)
+        return 1;
+    /* v1 maps (md5, 16 byte digest) are still readable */
+    return (n == want && memcmp(magic, HM_MAP_MAGIC_V1, want) == 0);
 }
 
 static int file_exists(const char *path)
@@ -98,13 +102,20 @@ int hm_mode_map(int argc, char **argv)
                     strerror(errno));
             return 1;
         }
-        if (!resuming &&
-            fwrite(HM_MAP_MAGIC, 1, strlen(HM_MAP_MAGIC), cfg.rec) !=
-                strlen(HM_MAP_MAGIC)) {
-            fprintf(stderr, "[-] cannot write map header: %s\n",
-                    strerror(errno));
-            fclose(cfg.rec);
-            return 1;
+        if (!resuming) {
+            char hdr[128];
+            int n;
+
+            n = snprintf(hdr, sizeof(hdr),
+                         "%salgo %s\ndlen %d\n", HM_MAP_MAGIC,
+                         hm_algo_name(cfg.algo), cfg.map_dlen);
+            if (n < 0 || (size_t)n >= sizeof(hdr) ||
+                fwrite(hdr, 1, (size_t)n, cfg.rec) != (size_t)n) {
+                fprintf(stderr, "[-] cannot write map header: %s\n",
+                        strerror(errno));
+                fclose(cfg.rec);
+                return 1;
+            }
         }
     }
     int finished = 0;

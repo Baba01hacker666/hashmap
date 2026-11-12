@@ -121,15 +121,20 @@ static void engine_hex_encode(const char *s, size_t n, char *out)
 int hm_parse_target(const char *hex, hm_target_t *tg)
 {
     size_t l;
+    size_t nbytes;
 
     if (hex == NULL || tg == NULL)
         return -1;
     l = strlen(hex);
-    if (l != 32) {
-        fprintf(stderr, "[-] '%s' is not a 32-char MD5 hex string\n", hex);
+    if (l != 32 && l != 64) {
+        fprintf(stderr,
+                "[-] '%s' is not a 32-char (md5) or 64-char (sha256) hex "
+                "string\n",
+                hex);
         return -1;
     }
-    for (int i = 0; i < 16; i++) {
+    nbytes = l / 2;
+    for (size_t i = 0; i < nbytes; i++) {
         char c1 = (char)tolower((unsigned char)hex[2 * i]);
         char c2 = (char)tolower((unsigned char)hex[2 * i + 1]);
         int v1;
@@ -242,12 +247,33 @@ static void lenctx_build(lenctx_t *ctx, int L, const char *salt, int salt_len,
     }
 }
 
-static void md5_candidate(const lenctx_t *ctx, const char *cs, int L,
-                          const uint8_t *digs, uint8_t out[16],
-                          const char *salt, int salt_len, bool pre)
+/* digest of a candidate with the configured algorithm */
+static void hash_candidate(const lenctx_t *ctx, const char *cs, int L,
+                           const uint8_t *digs, uint8_t *out,
+                           const char *salt, int salt_len, bool pre)
 {
     int pre_len = pre ? salt_len : 0;
     int post_len = pre ? 0 : salt_len;
+
+    if (g_cfg->algo != HM_ALG_MD5) {
+        /* no midstate fast path for the other algorithms */
+        uint8_t buf[HM_MAX_SALT * 2 + HM_MAX_PWLEN];
+        size_t n = 0;
+        size_t ol = 0;
+
+        if (pre_len > 0) {
+            memcpy(buf, salt, (size_t)pre_len);
+            n = (size_t)pre_len;
+        }
+        for (int k = 0; k < L; k++)
+            buf[n++] = (uint8_t)cs[digs[k]];
+        if (post_len > 0) {
+            memcpy(buf + n, salt, (size_t)post_len);
+            n += (size_t)post_len;
+        }
+        hm_hash(g_cfg->algo, buf, n, out, &ol);
+        return;
+    }
 
     if (ctx->fast) {
         uint32_t st[4];
@@ -876,7 +902,8 @@ static void wlist_digest(size_t len, const char *line, uint8_t out[16])
     int pre_len = g_cfg->salt_pre ? g_cfg->salt_len : 0;
     int post_len = g_cfg->salt_pre ? 0 : g_cfg->salt_len;
 
-    if (len >= 1 && len <= (size_t)HM_MAX_PWLEN && g_wctx[len].fast) {
+    if (g_cfg->algo == HM_ALG_MD5 && len >= 1 &&
+        len <= (size_t)HM_MAX_PWLEN && g_wctx[len].fast) {
         const lenctx_t *ctx = &g_wctx[len];
         uint32_t st[4];
         uint8_t blk[64];
@@ -910,7 +937,11 @@ static void wlist_digest(size_t len, const char *line, uint8_t out[16])
             memcpy(buf + n, g_cfg->salt, (size_t)post_len);
             n += (size_t)post_len;
         }
-        hm_md5(buf, n, out);
+        {
+            size_t ol = 0;
+
+            hm_hash(g_cfg->algo, buf, n, out, &ol);
+        }
     }
 }
 
@@ -932,10 +963,10 @@ static size_t wlist_line(size_t i, const char **out)
 /* worker                                                              */
 /* ------------------------------------------------------------------ */
 
-static const hm_target_t *find_hit(const uint8_t dg[16])
+static const hm_target_t *find_hit(const uint8_t *dg)
 {
     for (int i = 0; i < g_cfg->ntargets; i++) {
-        if (memcmp(dg, g_cfg->targets[i].bytes, 16) == 0)
+        if (memcmp(dg, g_cfg->targets[i].bytes, (size_t)g_cfg->digest_len) == 0)
             return &g_cfg->targets[i];
     }
     return NULL;
@@ -968,15 +999,16 @@ static void report_found(const hm_target_t *tg, const char *plain, int L)
         atomic_store(&hm_stop, 1);
 }
 
-static void map_record_write(const uint8_t dg[16], const char *plain, int plen)
+static void map_record_write(const uint8_t *dg, const char *plain, int plen)
 {
-    uint8_t rec[HM_MAX_PLAIN + 17];
+    uint8_t rec[HM_MAX_PLAIN + 33];
+    size_t dlen = (size_t)g_cfg->map_dlen;
 
-    memcpy(rec, dg, 16);
-    rec[16] = (uint8_t)plen;
-    memcpy(rec + 17, plain, (size_t)plen);
-    if (fwrite(rec, 1, (size_t)(17 + plen), g_cfg->rec) !=
-        (size_t)(17 + plen)) {
+    memcpy(rec, dg, dlen);
+    rec[dlen] = (uint8_t)plen;
+    memcpy(rec + dlen + 1, plain, (size_t)plen);
+    if (fwrite(rec, 1, dlen + 1 + (size_t)plen, g_cfg->rec) !=
+        dlen + 1 + (size_t)plen) {
         fprintf(stderr, "[-] map stream write failed: %s\n", strerror(errno));
         exit(1);
     }
@@ -1001,7 +1033,7 @@ static void *worker(void *arg)
     const bool pre = g_cfg->salt_pre != 0;
     hm_wslot_t *me = &g_w[tid];
     uint8_t digs[HM_MAX_PWLEN];
-    uint8_t dg[16];
+    uint8_t dg[32];
     char plain[HM_MAX_PLAIN];
 
     atomic_store(&me->cur_valid, 0);
@@ -1058,21 +1090,22 @@ static void *worker(void *arg)
                         continue;
                     wlist_digest(linelen, line, dg);
                 } else {
-                    md5_candidate(&ctx, cs, L, digs, dg, g_cfg->salt,
-                                  g_cfg->salt_len, pre);
+                    hash_candidate(&ctx, cs, L, digs, dg, g_cfg->salt,
+                                   g_cfg->salt_len, pre);
                 }
                 if (g_wmode) {
                     /* the map record holds the wordlist candidate */
-                    uint8_t rec[HM_MAX_PLAIN + 17];
+                    uint8_t rec[HM_MAX_PLAIN + 33];
                     size_t plen = linelen;
+                    size_t dlen = (size_t)g_cfg->map_dlen;
 
                     if (plen > HM_MAX_PLAIN)
                         continue; /* too long for a record: skip it */
-                    memcpy(rec, dg, 16);
-                    rec[16] = (uint8_t)plen;
-                    memcpy(rec + 17, line, plen);
-                    if (fwrite(rec, 1, (size_t)(17 + plen), g_cfg->rec) !=
-                        (size_t)(17 + plen)) {
+                    memcpy(rec, dg, dlen);
+                    rec[dlen] = (uint8_t)plen;
+                    memcpy(rec + dlen + 1, line, plen);
+                    if (fwrite(rec, 1, dlen + 1 + (size_t)plen, g_cfg->rec) !=
+                        dlen + 1 + (size_t)plen) {
                         fprintf(stderr, "[-] map stream write failed: %s\n",
                                 strerror(errno));
                         exit(1);
@@ -1360,11 +1393,14 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "fresh", 0, 4 },
         { "first", 0, 5 },
         { "wordlist", 1, 6 },
+        { "algo", 1, 7 },
+        { "truncate", 1, 8 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     int opt;
     bool have_out = false;
+    bool algo_set = false;
     char cs_specs[8][HM_MAX_CS + 1];
     int ncs = 0;
     char *cs_ptrs[8];
@@ -1461,6 +1497,21 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         case 3: /* state */
             snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", hm_optarg);
             break;
+        case 7: /* algo */
+            if (hm_algo_parse(hm_optarg, &cfg->algo) < 0) {
+                fprintf(stderr, "[-] unknown algo '%s' (md5|sha256)\n",
+                        hm_optarg);
+                return -1;
+            }
+            algo_set = true;
+            break;
+        case 8: /* truncate: store only N digest bytes in a map */
+            if (sscanf(hm_optarg, "%d", &cfg->truncate) != 1 ||
+                cfg->truncate < 4 || cfg->truncate > 32) {
+                fprintf(stderr, "[-] --truncate must be 4..32\n");
+                return -1;
+            }
+            break;
         case 6: /* wordlist: the map source is a wordlist file */
             if (want_targets) {
                 fprintf(stderr,
@@ -1498,6 +1549,32 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
 
     if (!have_out)
         cfg->out_path[0] = '\0';
+
+    /* the algorithm: explicit, or derived from the hash length
+     * (32 hex = md5, 64 hex = sha256) */
+    if (!algo_set) {
+        size_t hlen = 0;
+
+        for (int i = 0; i < cfg->ntargets; i++) {
+            size_t n = strlen(cfg->targets[i].hex);
+
+            if (hlen == 0)
+                hlen = n;
+            else if (n != hlen) {
+                fprintf(stderr,
+                        "[-] all targets must use the same hash length\n");
+                return -1;
+            }
+        }
+        if (hlen == 64)
+            cfg->algo = HM_ALG_SHA256;
+        else
+            cfg->algo = HM_ALG_MD5;
+    }
+    cfg->digest_len = (int)hm_algo_size(cfg->algo);
+    cfg->map_dlen = cfg->digest_len;
+    if (cfg->truncate > 0 && cfg->truncate < cfg->map_dlen)
+        cfg->map_dlen = cfg->truncate;
     return 0;
 }
 

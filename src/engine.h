@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "crypto.h"
 #include "hashmap.h"
 
 /* remaining-work span inside one length's keyspace */
@@ -40,6 +41,14 @@ typedef struct {
 
     /* results path (used to open outf in hm_opts_common) */
     char out_path[HM_MAX_STATE_PATH];
+
+    /* digest algorithm (md5 by default) and the digest length used in the
+     * map records; truncate < digest_len stores only the first N bytes, which
+     * keeps a sha256 map the same size as an md5 one */
+    hm_algo_t algo;
+    int digest_len; /* full digest size used for the comparison */
+    int map_dlen;   /* digest bytes stored in a map record */
+    int truncate;   /* 0 = store the full digest */
 
     /* map mode: stream of binary records (NULL = plain brute mode) */
     FILE *rec;

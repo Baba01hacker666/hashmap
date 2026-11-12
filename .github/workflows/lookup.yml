@@ -115,12 +115,18 @@ jobs:
         run: |
           set -eu
           mkdir -p "$FARM_DIR"
-          if gh release download maps --pattern 'wordlist-map.hmmap' \
+          # 64 hex chars = sha256, 32 hex chars = md5
+          if grep -qE '^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt"; then
+            mapname=wordlist-map-sha256.hmmap
+          else
+            mapname=wordlist-map.hmmap
+          fi
+          if gh release download maps --pattern "$mapname" \
                  --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-            echo "map downloaded - searching it"
+            echo "map downloaded ($mapname) - searching it"
             set +e
             ./hashmap search -F "$FARM_DIR/hashes.txt" \
-                "$FARM_DIR/wordlist-map.hmmap" -o "$FARM_DIR/hits-map.txt"
+                "$FARM_DIR/$mapname" -o "$FARM_DIR/hits-map.txt"
             set -e
           else
             echo "no published map - skipping the map stage"

@@ -29,6 +29,8 @@ The same flag means the same thing in every mode.
 | `-t, --threads <n>` | worker threads (default: all cores) |
 | `-s, --salt <string>` | salt applied to every candidate |
 | `-p, --salt-pos <pre\|post>` | salt placement (default: `pre`) |
+| `-a, --algo <md5\|sha256>` | digest algorithm — default: taken from the hash length (32 hex = md5, 64 hex = sha256) |
+| `--truncate <n>` | store only `n` digest bytes in a map (16 keeps a sha256 map as small as an md5 one) |
 | `--state <file>` | state file: pause/resume a long run |
 | `--fresh` | ignore and delete an existing state file |
 | `-h, --help` / `-v, --version` | help / version |
@@ -82,6 +84,30 @@ hashmap map -o wordlist-map.hmmap --wordlist wordlists/combined.txt
 
 With `--wordlist` the candidates come from a wordlist file instead of a
 charset keyspace — every line becomes one map entry.
+
+### MD5 and SHA-256
+
+The algorithm follows the hash you give: a 32-char hex target is MD5, a
+64-char hex target is SHA-256. `--algo` overrides it.
+
+```sh
+hashmap brute -H <64-char sha256hex> -c alnum --max 6
+hashmap map -o s.hmmap --wordlist wordlists/combined.txt --algo sha256
+hashmap search -H <64-char sha256hex> s.hmmap
+```
+
+### Keeping the map small
+
+A SHA-256 map would be twice as big as an MD5 one (32 instead of 16 digest
+bytes per entry). `--truncate 16` stores only the first 16 bytes of the
+digest — still a 2^-128 match probability — so the map stays the same size:
+
+```sh
+hashmap map -o s.hmmap --wordlist combined.txt --algo sha256 --truncate 16
+```
+
+Map files carry their algorithm and digest length in the header
+(`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.
 
 Writes one record per candidate:
 

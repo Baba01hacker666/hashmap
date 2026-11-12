@@ -44,6 +44,13 @@ sha256_of() {
         printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
     fi
 }
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+    fi
+}
 file_md5() {
     if command -v md5sum >/dev/null 2>&1; then
         md5sum "$1" | cut -d' ' -f1
@@ -400,6 +407,42 @@ out="$("$BIN" search -H "$HL" "$TMP/long.hmmap" 2>/dev/null)"
 "$BIN" brute -H "$HWP" --wordlist "$TMP/src.txt" >/dev/null 2>&1
 [ $? -eq 2 ] && ok "--wordlist is rejected in brute mode" \
     || bad "--wordlist is rejected in brute mode"
+
+# ------------------------------------------------------------------
+head_ "sha256 support"
+# ------------------------------------------------------------------
+S256="$(sha256_of 'password')"
+S256_2="$(sha256_of '123')"
+
+# brute: the algorithm follows the hash length (64 hex = sha256)
+"$BIN" brute -H "$S256_2" -c digits --max 4 >/dev/null 2>&1
+[ $? -eq 0 ] && ok "brute cracks a sha256 hash" || bad "brute cracks a sha256 hash"
+
+# wordlist mode with sha256
+"$BIN" wordlist -H "$S256" -w "$TMP/wl.txt" >/dev/null 2>&1
+[ $? -eq 0 ] && ok "wordlist cracks a sha256 hash" || bad "wordlist cracks a sha256 hash"
+
+# a sha256 map
+"$BIN" map -o "$TMP/s256.hmmap" --wordlist "$TMP/wl.txt" --algo sha256 \
+    >/dev/null 2>&1
+out="$("$BIN" search -H "$S256" "$TMP/s256.hmmap" 2>/dev/null)"
+[ "$out" = "$S256:password" ] && ok "a sha256 map is searchable" \
+    || bad "a sha256 map is searchable (got=$out)"
+
+# a truncated sha256 map: the same size as an md5 map, still searchable
+"$BIN" map -o "$TMP/s256t.hmmap" --wordlist "$TMP/wl.txt" --algo sha256 \
+    --truncate 16 >/dev/null 2>&1
+out="$("$BIN" search -H "$S256" "$TMP/s256t.hmmap" 2>/dev/null)"
+[ "$out" = "$S256:password" ] && ok "a truncated sha256 map is searchable" \
+    || bad "a truncated sha256 map is searchable (got=$out)"
+sm=$(wc -c < "$TMP/s256.hmmap")
+st=$(wc -c < "$TMP/s256t.hmmap")
+[ "$st" -lt "$sm" ] && ok "truncation shrinks the map ($st < $sm bytes)" \
+    || bad "truncation shrinks the map ($st vs $sm bytes)"
+
+# mixed hash lengths are refused
+"$BIN" brute -H "$H123" -H "$S256" -c digits --max 2 >/dev/null 2>&1
+[ $? -eq 2 ] && ok "mixed hash lengths are refused" || bad "mixed hash lengths are refused"
 
 # ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"

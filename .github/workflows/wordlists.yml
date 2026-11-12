@@ -73,7 +73,7 @@ jobs:
             echo "rebuild requested"
           elif gh release download maps --pattern 'wordlist-map.hmmap' \
                  --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-            echo "downloaded the published map"
+            echo "downloaded the published md5 map"
           else
             echo "no published map - building it from the list (once)"
             ./hashmap map -o "$FARM_DIR/wordlist-map.hmmap" \
@@ -83,6 +83,31 @@ jobs:
           fi
           [ -s "$FARM_DIR/wordlist-map.hmmap" ] || {
             echo "::error::no map"; exit 1; }
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+
+      - name: Get the sha256 hashmap of the list
+        id: getmap256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          built=false
+          if [ "${{ inputs.rebuild }}" = "true" ]; then
+            echo "rebuild requested"
+          elif gh release download maps --pattern 'wordlist-map-sha256.hmmap' \
+                 --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+            echo "downloaded the published sha256 map"
+          else
+            echo "no published sha256 map - building it (once)"
+            # --truncate 16 keeps it the same size as the md5 map
+            ./hashmap map -o "$FARM_DIR/wordlist-map-sha256.hmmap" \
+                --wordlist "$FARM_DIR/combined.txt" --algo sha256 \
+                --truncate 16 \
+                --state "$FARM_DIR/map256.state" -t "$(nproc)"
+            built=true
+          fi
+          [ -s "$FARM_DIR/wordlist-map-sha256.hmmap" ] || {
+            echo "::error::no sha256 map"; exit 1; }
           echo "built=$built" >> "$GITHUB_OUTPUT"
 
       - name: Statistics
@@ -154,7 +179,7 @@ jobs:
           retention-days: 90
 
       - name: Publish the map (only when it was rebuilt)
-        if: steps.getmap.outputs.built == 'true' || inputs.rebuild == 'true'
+        if: steps.getmap.outputs.built == 'true' || steps.getmap256.outputs.built == 'true' || inputs.rebuild == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: maps
@@ -173,6 +198,7 @@ jobs:
             ```
           files: |
             ${{ env.FARM_DIR }}/wordlist-map.hmmap
+            ${{ env.FARM_DIR }}/wordlist-map-sha256.hmmap
           fail_on_unmatched_files: false
 
       - name: Publish the list (only when it was rebuilt)

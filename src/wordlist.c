@@ -23,8 +23,8 @@
 #define HM_WL_CHUNK 2048 /* lines per work unit */
 
 typedef struct {
-    uint8_t bytes[16];
-    char hex[33];
+    uint8_t bytes[32];
+    char hex[65];
     int found;
 } wl_target_t;
 
@@ -34,6 +34,7 @@ typedef struct {
     char *salt;
     int salt_len;
     int salt_pre;
+    hm_algo_t algo;
     char *data;      /* the whole wordlist */
     size_t data_len;
     size_t *offs;    /* offset of every line start (+ one past the end) */
@@ -48,10 +49,11 @@ typedef struct {
 static wl_ctx_t g_wl;
 
 /* hash one candidate (with salt) */
-static void wl_hash(const char *line, size_t len, uint8_t out[16])
+static void wl_hash(const char *line, size_t len, uint8_t *out)
 {
     uint8_t buf[HM_MAX_PLAIN];
     size_t n = 0;
+    size_t ol = 0;
 
     if (g_wl.salt_len > 0 && g_wl.salt_pre) {
         memcpy(buf, g_wl.salt, (size_t)g_wl.salt_len);
@@ -65,13 +67,13 @@ static void wl_hash(const char *line, size_t len, uint8_t out[16])
         memcpy(buf + n, g_wl.salt, (size_t)g_wl.salt_len);
         n += (size_t)g_wl.salt_len;
     }
-    hm_md5(buf, n, out);
+    hm_hash(g_wl.algo, buf, n, out, &ol);
 }
 
 static void *wl_worker(void *arg)
 {
     (void)arg;
-    uint8_t dg[16];
+    uint8_t dg[32];
 
     for (;;) {
         size_t start;
@@ -104,9 +106,11 @@ static void *wl_worker(void *arg)
             wl_hash(g_wl.data + off, len, dg);
 
             for (int t = 0; t < g_wl.ntargets; t++) {
+                size_t dlen = (size_t)hm_algo_size(g_wl.algo);
+
                 if (g_wl.targets[t].found)
                     continue;
-                if (memcmp(g_wl.targets[t].bytes, dg, 16) != 0)
+                if (memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
                     continue;
                 pthread_mutex_lock(&g_wl.mtx);
                 if (!g_wl.targets[t].found) {
@@ -181,6 +185,7 @@ int hm_mode_wordlist(int argc, char **argv)
         { "salt", 1, 's' },
         { "salt-pos", 1, 'p' },
         { "threads", 1, 't' },
+        { "algo", 1, 'a' },
         { "first", 0, 'f' },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
@@ -193,6 +198,8 @@ int hm_mode_wordlist(int argc, char **argv)
     int salt_pre = 1;
     int stop_first = 0;
     int nthreads = (int)hm_cpu_count();
+    hm_algo_t algo = HM_ALG_MD5;
+    bool algo_set = false;
     int ntargets = 0;
     int opt;
     int rc = 1;
@@ -210,7 +217,7 @@ int hm_mode_wordlist(int argc, char **argv)
     }
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:F:w:o:s:p:t:fh", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:w:o:s:p:t:afh", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -221,8 +228,8 @@ int hm_mode_wordlist(int argc, char **argv)
             }
             if (hm_parse_target(hm_optarg, &tg) < 0)
                 goto out;
-            memcpy(targets[ntargets].bytes, tg.bytes, 16);
-            memcpy(targets[ntargets].hex, tg.hex, 33);
+            memcpy(targets[ntargets].bytes, tg.bytes, strlen(tg.hex) / 2);
+            memcpy(targets[ntargets].hex, tg.hex, strlen(tg.hex) + 1);
             targets[ntargets].found = 0;
             ntargets++;
             break;
@@ -246,8 +253,10 @@ int hm_mode_wordlist(int argc, char **argv)
                 goto out;
             }
             for (int i = 0; i < nt; i++) {
-                memcpy(targets[ntargets].bytes, tgs[i].bytes, 16);
-                memcpy(targets[ntargets].hex, tgs[i].hex, 33);
+                memcpy(targets[ntargets].bytes, tgs[i].bytes,
+                       strlen(tgs[i].hex) / 2);
+                memcpy(targets[ntargets].hex, tgs[i].hex,
+                       strlen(tgs[i].hex) + 1);
                 targets[ntargets].found = 0;
                 ntargets++;
             }
@@ -283,6 +292,14 @@ int hm_mode_wordlist(int argc, char **argv)
                 fprintf(stderr, "[-] bad --threads value\n");
                 goto out;
             }
+            break;
+        case 'a':
+            if (hm_algo_parse(hm_optarg, &algo) < 0) {
+                fprintf(stderr, "[-] unknown algo '%s' (md5|sha256)\n",
+                        hm_optarg);
+                goto out;
+            }
+            algo_set = true;
             break;
         case 'f':
             stop_first = 1;
@@ -335,6 +352,26 @@ int hm_mode_wordlist(int argc, char **argv)
         g_wl.offs = offs;
         g_wl.nlines = nlines;
     }
+
+    /* the algorithm: explicit, or derived from the hash length */
+    if (!algo_set) {
+        size_t hlen = 0;
+
+        for (int i = 0; i < ntargets; i++) {
+            size_t n = strlen(targets[i].hex);
+
+            if (hlen == 0)
+                hlen = n;
+            else if (n != hlen) {
+                fprintf(stderr,
+                        "[-] all targets must use the same hash length\n");
+                goto out;
+            }
+        }
+        if (hlen == 64)
+            algo = HM_ALG_SHA256;
+    }
+    g_wl.algo = algo;
 
     g_wl.targets = targets;
     g_wl.ntargets = ntargets;
