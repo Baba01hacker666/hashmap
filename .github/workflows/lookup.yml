@@ -118,22 +118,27 @@ jobs:
         run: |
           set -eu
           mkdir -p "$FARM_DIR"
-          # 64 hex chars = sha256, 32 hex chars = md5
+          # 64 hex chars = sha256, 32 hex chars = md5 - a mixed list needs
+          # both maps
+          mapnames=""
           if grep -qE '^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt"; then
-            mapname=wordlist-map-sha256.hmmap
-          else
-            mapname=wordlist-map.hmmap
+            mapnames="$mapnames wordlist-map-sha256.hmmap"
           fi
-          if gh release download maps --pattern "$mapname" \
-                 --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-            echo "map downloaded ($mapname) - searching it"
-            set +e
-            ./hashmap search -F "$FARM_DIR/hashes.txt" \
-                "$FARM_DIR/$mapname" -o "$FARM_DIR/hits-map.txt"
-            set -e
-          else
-            echo "no published map - skipping the map stage"
+          if grep -qE '^[0-9a-f]{32}$' "$FARM_DIR/hashes.txt"; then
+            mapnames="$mapnames wordlist-map.hmmap"
           fi
+          for mapname in $mapnames; do
+            if gh release download maps --pattern "$mapname" \
+                   --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+              echo "map downloaded ($mapname) - searching it"
+              set +e
+              ./hashmap search -F "$FARM_DIR/hashes.txt" \
+                  "$FARM_DIR/$mapname" -o "$FARM_DIR/hits-map.txt"
+              set -e
+            else
+              echo "no published map $mapname - skipping it"
+            fi
+          done
           found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
           echo "found=$found" >> "$GITHUB_OUTPUT"
