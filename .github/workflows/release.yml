@@ -58,9 +58,7 @@ jobs:
         shell: bash
         run: |
           gcc -std=c11 -O3 -pthread -Isrc -Wall -Wextra -Werror \
-              -o hashmap.exe src/util.c src/charset.c src/crypto.c \
-              src/engine.c src/brute.c src/digest.c src/map.c src/search.c \
-              src/main.c
+              -o hashmap.exe src/*.c
           ./hashmap.exe digest -i hello
 
       - name: Package (unix)
