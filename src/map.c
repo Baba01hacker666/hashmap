@@ -106,9 +106,14 @@ int hm_mode_map(int argc, char **argv)
             char hdr[128];
             int n;
 
-            n = snprintf(hdr, sizeof(hdr),
-                         "%salgo %s\ndlen %d\n", HM_MAP_MAGIC,
-                         hm_algo_name(cfg.algo), cfg.map_dlen);
+            if (cfg.use_bcrypt)
+                n = snprintf(hdr, sizeof(hdr),
+                             "%salgo bcrypt\ndlen %d\nsalt %s\n", HM_MAP_MAGIC,
+                             cfg.map_dlen, cfg.bcrypt_salt);
+            else
+                n = snprintf(hdr, sizeof(hdr),
+                             "%salgo %s\ndlen %d\n", HM_MAP_MAGIC,
+                             hm_algo_name(cfg.algo), cfg.map_dlen);
             if (n < 0 || (size_t)n >= sizeof(hdr) ||
                 fwrite(hdr, 1, (size_t)n, cfg.rec) != (size_t)n) {
                 fprintf(stderr, "[-] cannot write map header: %s\n",

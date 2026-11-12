@@ -32,6 +32,8 @@ The same flag means the same thing in every mode.
 | `-a, --algo <md5\|sha256>` | digest algorithm — default: taken from the hash length (32 hex = md5, 64 hex = sha256) |
 | `--truncate <n>` | store only `n` digest bytes in a map (16 keeps a sha256 map as small as an md5 one) |
 | `--state <file>` | state file: pause/resume a long run |
+| `--bcrypt` | map mode: bcrypt digests for the salt of `--salt` |
+| `--bcrypt-cost <n>` | the cost of that bcrypt map (default 12) |
 | `--fresh` | ignore and delete an existing state file |
 | `-h, --help` / `-v, --version` | help / version |
 
@@ -108,6 +110,26 @@ hashmap map -o s.hmmap --wordlist combined.txt --algo sha256 --truncate 16
 
 Map files carry their algorithm and digest length in the header
 (`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.
+
+### bcrypt
+
+A bcrypt hash (`$2b$12$...`) is recognised automatically. The salt comes
+from the hash, so candidates are verified the same way a real system does
+it — see [bcrypt.md](bcrypt.md).
+
+```sh
+hashmap wordlist -H '$2b$12$...' -w wordlists/combined.txt
+hashmap brute  -H '$2b$12$...' -c lower+digits --max 6
+```
+
+A bcrypt map needs a **fixed salt** — the header remembers it and the search
+refuses a hash that uses a different one:
+
+```sh
+hashmap map -o bcrypt.hmmap --wordlist wordlists/combined.txt \
+    --bcrypt --salt DCq7YPn5Rq63x1Lad4cll. --bcrypt-cost 12
+hashmap search -H '$2b$12$DCq7YPn5Rq63x1Lad4cll....' bcrypt.hmmap
+```
 
 Writes one record per candidate:
 

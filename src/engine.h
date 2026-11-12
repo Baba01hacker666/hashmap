@@ -50,6 +50,11 @@ typedef struct {
     int map_dlen;   /* digest bytes stored in a map record */
     int truncate;   /* 0 = store the full digest */
 
+    /* bcrypt: the candidates are verified against a bcrypt hash. bcrypt
+     * carries its own salt, so a map is only possible with a fixed salt */
+    int use_bcrypt;
+    char bcrypt_salt[48];
+
     /* map mode: stream of binary records (NULL = plain brute mode) */
     FILE *rec;
 
@@ -75,6 +80,13 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets);
 
 /* parse a 32-char MD5 hex string into target (both fill bytes and hex) */
 int hm_parse_target(const char *hex, hm_target_t *tg);
+
+/* parse a bcrypt hash ("$2b$12$...") into target (the 23 digest bytes) and
+ * return its salt; returns -1 when the hash is not a bcrypt hash */
+int hm_parse_bcrypt_target(const char *hash, hm_target_t *tg, char salt[48]);
+
+/* does the string look like a bcrypt hash? */
+int hm_is_bcrypt_hash(const char *s);
 
 /* load targets from a hash file (one md5 hex per line, '#' comments) */
 int hm_load_targets(const char *path, hm_target_t *targets, int *nt);

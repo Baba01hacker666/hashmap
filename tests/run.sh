@@ -445,6 +445,38 @@ st=$(wc -c < "$TMP/s256t.hmmap")
 [ $? -eq 2 ] && ok "mixed hash lengths are refused" || bad "mixed hash lengths are refused"
 
 # ------------------------------------------------------------------
+head_ "bcrypt"
+# ------------------------------------------------------------------
+# a known bcrypt hash of 'password' (cost 6, salt DCq7YPn5Rq63x1Lad4cll.)
+BC_HASH='$2b$06$DCq7YPn5Rq63x1Lad4cll.kD3zZ845LsvMekyowTQk2VNmbDdQsWO'
+BC_SALT='DCq7YPn5Rq63x1Lad4cll.'
+
+printf 'password\nletmein\nabc123\n' > "$TMP/bc.txt"
+"$BIN" wordlist -H "$BC_HASH" -w "$TMP/bc.txt" >/dev/null 2>&1
+[ $? -eq 0 ] && ok "bcrypt: the wordlist finds the password" \
+    || bad "bcrypt: the wordlist finds the password"
+
+# a bcrypt map with a fixed salt, then a lookup in it
+"$BIN" map -o "$TMP/bc.hmmap" --wordlist "$TMP/bc.txt" --bcrypt \
+    --salt "$BC_SALT" --bcrypt-cost 6 >/dev/null 2>&1
+out="$("$BIN" search -H "$BC_HASH" "$TMP/bc.hmmap" 2>/dev/null)"
+case "$out" in
+    *":password") ok "bcrypt: the map lookup finds the password" ;;
+    *) bad "bcrypt: the map lookup finds the password (got=$out)" ;;
+esac
+
+# a hash with another salt must not match the map
+BC_OTHER='$2b$06$If6bvum7QjO3b5EvQ5aSxS.Dt3mpH9ZZx4VEtb3Xhdzd6xOqmpCrpi'
+"$BIN" search -H "$BC_OTHER" "$TMP/bc.hmmap" >/dev/null 2>&1
+[ $? -ne 0 ] && ok "bcrypt: a different salt does not match" \
+    || bad "bcrypt: a different salt does not match"
+
+# brute force against a bcrypt hash (small space, low cost)
+BC_TEST='$2b$04$DCq7YPn5Rq63x1Lad4cll.Fg1U403/BHS4qgV12/Ne2EXGwnxTDPm'
+"$BIN" brute -H "$BC_TEST" -c digits --max 3 >/dev/null 2>&1
+[ $? -eq 0 ] && ok "bcrypt: brute force works" || bad "bcrypt: brute force works"
+
+# ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0

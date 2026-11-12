@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "bcrypt.h"
 #include "charset.h"
 #include "crypto.h"
 #include "hashmap.h"
@@ -153,6 +154,36 @@ int hm_parse_target(const char *hex, hm_target_t *tg)
     return 0;
 }
 
+int hm_is_bcrypt_hash(const char *s)
+{
+    return (s != NULL && s[0] == '$' && s[1] == '2' && s[2] != '\0' &&
+            s[3] == '$');
+}
+
+int hm_parse_bcrypt_target(const char *hash, hm_target_t *tg, char salt[48])
+{
+    unsigned char dig[23];
+    char s[24];
+
+    if (hash == NULL || tg == NULL)
+        return -1;
+    if (!hm_is_bcrypt_hash(hash))
+        return -1;
+    if (hm_bcrypt_digest(hash, dig) < 0) {
+        fprintf(stderr, "[-] '%s' is not a valid bcrypt hash\n", hash);
+        return -1;
+    }
+    if (hm_bcrypt_salt(hash, s) < 0)
+        return -1;
+    memcpy(tg->bytes, dig, 23);
+    snprintf(tg->hex, sizeof(tg->hex), "%s", hash);
+    if (salt != NULL) {
+        /* the full setting: "$2b$06$<22 salt chars>" */
+        snprintf(salt, 48, "%.7s%s", hash, s);
+    }
+    return 0;
+}
+
 int hm_load_targets(const char *path, hm_target_t *targets, int *nt)
 {
     FILE *f;
@@ -256,6 +287,22 @@ static void hash_candidate(const lenctx_t *ctx, const char *cs, int L,
 {
     int pre_len = pre ? salt_len : 0;
     int post_len = pre ? 0 : salt_len;
+
+    if (g_cfg->use_bcrypt) {
+        /* bcrypt takes the candidate as a string, not as charset indices */
+        char cand[HM_MAX_PLAIN];
+        char h[HM_BCRYPT_MAX];
+        size_t n = 0;
+
+        for (int k = 0; k < L; k++)
+            cand[n++] = cs[digs[k]];
+        cand[n] = '\0';
+        if (hm_bcrypt(cand, g_cfg->bcrypt_salt, h, sizeof(h)) < 0)
+            memset(out, 0, 32);
+        else
+            (void)hm_bcrypt_digest(h, out);
+        return;
+    }
 
     if (g_cfg->algo != HM_ALG_MD5) {
         /* no midstate fast path for the other algorithms */
@@ -899,10 +946,25 @@ static void wlist_free(void)
 
 /* digest of a raw wordlist candidate (the charset fast path does not apply:
  * the candidate bytes come from the file, not from a charset) */
-static void wlist_digest(size_t len, const char *line, uint8_t out[16])
+static void wlist_digest(size_t len, const char *line, uint8_t *out)
 {
     int pre_len = g_cfg->salt_pre ? g_cfg->salt_len : 0;
     int post_len = g_cfg->salt_pre ? 0 : g_cfg->salt_len;
+
+    if (g_cfg->use_bcrypt) {
+        char cand[HM_MAX_PLAIN];
+        char h[HM_BCRYPT_MAX];
+
+        if (len >= sizeof(cand))
+            len = sizeof(cand) - 1;
+        memcpy(cand, line, len);
+        cand[len] = '\0';
+        if (hm_bcrypt(cand, g_cfg->bcrypt_salt, h, sizeof(h)) < 0)
+            memset(out, 0, 32);
+        else
+            (void)hm_bcrypt_digest(h, out);
+        return;
+    }
 
     if (g_cfg->algo == HM_ALG_MD5 && len >= 1 &&
         len <= (size_t)HM_MAX_PWLEN && g_wctx[len].fast) {
@@ -1397,12 +1459,16 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "wordlist", 1, 6 },
         { "algo", 1, 7 },
         { "truncate", 1, 8 },
+        { "bcrypt", 0, 9 },
+        { "bcrypt-cost", 1, 10 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
     int opt;
     bool have_out = false;
     bool algo_set = false;
+    bool bcrypt_target_found = false;
+    int bcrypt_cost = 12;
     char cs_specs[8][HM_MAX_CS + 1];
     int ncs = 0;
     char *cs_ptrs[8];
@@ -1426,8 +1492,16 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 fprintf(stderr, "[-] too many targets\n");
                 return -1;
             }
-            if (hm_parse_target(hm_optarg, &cfg->targets[cfg->ntargets]) < 0)
+            if (hm_is_bcrypt_hash(hm_optarg)) {
+                if (hm_parse_bcrypt_target(hm_optarg, &cfg->targets[cfg->ntargets],
+                                           cfg->bcrypt_salt) < 0)
+                    return -1;
+                cfg->use_bcrypt = 1;
+                bcrypt_target_found = true;
+            } else if (hm_parse_target(hm_optarg,
+                                       &cfg->targets[cfg->ntargets]) < 0) {
                 return -1;
+            }
             cfg->ntargets++;
             break;
         case 'F':
@@ -1498,6 +1572,20 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             break;
         case 3: /* state */
             snprintf(cfg->state_path, sizeof(cfg->state_path), "%s", hm_optarg);
+            break;
+        case 10: /* bcrypt-cost */
+            if (sscanf(hm_optarg, "%d", &bcrypt_cost) != 1 || bcrypt_cost < 4 ||
+                bcrypt_cost > 16) {
+                fprintf(stderr, "[-] --bcrypt-cost must be 4..16\n");
+                return -1;
+            }
+            break;
+        case 9: /* bcrypt: the map holds bcrypt digests for a fixed salt */
+            if (want_targets) {
+                fprintf(stderr, "[-] --bcrypt is only valid in map mode\n");
+                return -1;
+            }
+            cfg->use_bcrypt = 1;
             break;
         case 7: /* algo */
             if (hm_algo_parse(hm_optarg, &cfg->algo) < 0) {
@@ -1572,6 +1660,22 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
             cfg->algo = HM_ALG_SHA256;
         else
             cfg->algo = HM_ALG_MD5;
+    }
+    if (cfg->use_bcrypt) {
+        cfg->digest_len = 23; /* the raw bcrypt digest */
+        cfg->map_dlen = 23;
+        if (!bcrypt_target_found) {
+            /* map mode: the salt comes from --salt, the cost from
+             * --bcrypt-cost */
+            if (cfg->salt_len != 22) {
+                fprintf(stderr,
+                        "[-] a bcrypt map needs --salt <22 characters>\n");
+                return -1;
+            }
+            snprintf(cfg->bcrypt_salt, sizeof(cfg->bcrypt_salt),
+                     "$2b$%02d$%s", bcrypt_cost, cfg->salt);
+        }
+        return 0;
     }
     cfg->digest_len = (int)hm_algo_size(cfg->algo);
     cfg->map_dlen = cfg->digest_len;

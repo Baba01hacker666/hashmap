@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bcrypt.h"
 #include "crypto.h"
 #include "engine.h"
 #include "hashmap.h"
@@ -25,6 +26,7 @@
 typedef struct {
     uint8_t bytes[32];
     char hex[65];
+    char salt[48]; /* the bcrypt setting of this hash */
     int found;
 } wl_target_t;
 
@@ -35,6 +37,7 @@ typedef struct {
     int salt_len;
     int salt_pre;
     hm_algo_t algo;
+    int use_bcrypt;
     char *data;      /* the whole wordlist */
     size_t data_len;
     size_t *offs;    /* offset of every line start (+ one past the end) */
@@ -49,7 +52,8 @@ typedef struct {
 static wl_ctx_t g_wl;
 
 /* hash one candidate (with salt) */
-static void wl_hash(const char *line, size_t len, uint8_t *out)
+static void wl_hash(const char *line, size_t len, uint8_t *out,
+                    const char *bcrypt_setting)
 {
     uint8_t buf[HM_MAX_PLAIN];
     size_t n = 0;
@@ -66,6 +70,16 @@ static void wl_hash(const char *line, size_t len, uint8_t *out)
     if (g_wl.salt_len > 0 && !g_wl.salt_pre) {
         memcpy(buf + n, g_wl.salt, (size_t)g_wl.salt_len);
         n += (size_t)g_wl.salt_len;
+    }
+    if (g_wl.use_bcrypt && bcrypt_setting != NULL && bcrypt_setting[0] != '\0') {
+        char h[HM_BCRYPT_MAX];
+
+        if (hm_bcrypt((const char *)buf, bcrypt_setting, h, sizeof(h)) < 0) {
+            memset(out, 0, 32);
+            return;
+        }
+        (void)hm_bcrypt_digest(h, out);
+        return;
     }
     hm_hash(g_wl.algo, buf, n, out, &ol);
 }
@@ -103,13 +117,21 @@ static void *wl_worker(void *arg)
                 continue;
             if (len > HM_MAX_PLAIN)
                 continue;
-            wl_hash(g_wl.data + off, len, dg);
-
             for (int t = 0; t < g_wl.ntargets; t++) {
-                size_t dlen = (size_t)hm_algo_size(g_wl.algo);
+                size_t dlen;
 
                 if (g_wl.targets[t].found)
                     continue;
+                if (g_wl.use_bcrypt) {
+                    /* every bcrypt hash has its own salt */
+                    if (g_wl.targets[t].salt[0] == '\0')
+                        continue;
+                    wl_hash(g_wl.data + off, len, dg, g_wl.targets[t].salt);
+                    dlen = 23;
+                } else {
+                    dlen = (size_t)hm_algo_size(g_wl.algo);
+                    wl_hash(g_wl.data + off, len, dg, NULL);
+                }
                 if (memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
                     continue;
                 pthread_mutex_lock(&g_wl.mtx);
@@ -200,6 +222,7 @@ int hm_mode_wordlist(int argc, char **argv)
     int nthreads = (int)hm_cpu_count();
     hm_algo_t algo = HM_ALG_MD5;
     bool algo_set = false;
+    bool use_bcrypt = false;
     int ntargets = 0;
     int opt;
     int rc = 1;
@@ -226,10 +249,22 @@ int hm_mode_wordlist(int argc, char **argv)
                 fprintf(stderr, "[-] too many hashes\n");
                 goto out;
             }
-            if (hm_parse_target(hm_optarg, &tg) < 0)
-                goto out;
-            memcpy(targets[ntargets].bytes, tg.bytes, strlen(tg.hex) / 2);
-            memcpy(targets[ntargets].hex, tg.hex, strlen(tg.hex) + 1);
+            if (hm_is_bcrypt_hash(hm_optarg)) {
+                char bcsalt[48];
+
+                if (hm_parse_bcrypt_target(hm_optarg, &tg, bcsalt) < 0)
+                    goto out;
+                memcpy(targets[ntargets].bytes, tg.bytes, 23);
+                memcpy(targets[ntargets].hex, tg.hex, strlen(tg.hex) + 1);
+                snprintf(targets[ntargets].salt,
+                         sizeof(targets[ntargets].salt), "%s", bcsalt);
+                use_bcrypt = true;
+            } else {
+                if (hm_parse_target(hm_optarg, &tg) < 0)
+                    goto out;
+                memcpy(targets[ntargets].bytes, tg.bytes, strlen(tg.hex) / 2);
+                memcpy(targets[ntargets].hex, tg.hex, strlen(tg.hex) + 1);
+            }
             targets[ntargets].found = 0;
             ntargets++;
             break;
@@ -253,10 +288,25 @@ int hm_mode_wordlist(int argc, char **argv)
                 goto out;
             }
             for (int i = 0; i < nt; i++) {
-                memcpy(targets[ntargets].bytes, tgs[i].bytes,
-                       strlen(tgs[i].hex) / 2);
-                memcpy(targets[ntargets].hex, tgs[i].hex,
-                       strlen(tgs[i].hex) + 1);
+                if (hm_is_bcrypt_hash(tgs[i].hex)) {
+                    char bcsalt[48];
+                    hm_target_t bt;
+
+                    if (hm_parse_bcrypt_target(tgs[i].hex, &bt, bcsalt) < 0) {
+                        free(tgs);
+                        goto out;
+                    }
+                    memcpy(targets[ntargets].bytes, bt.bytes, 23);
+                    memcpy(targets[ntargets].hex, bt.hex, strlen(bt.hex) + 1);
+                    snprintf(targets[ntargets].salt,
+                             sizeof(targets[ntargets].salt), "%s", bcsalt);
+                    use_bcrypt = true;
+                } else {
+                    memcpy(targets[ntargets].bytes, tgs[i].bytes,
+                           strlen(tgs[i].hex) / 2);
+                    memcpy(targets[ntargets].hex, tgs[i].hex,
+                           strlen(tgs[i].hex) + 1);
+                }
                 targets[ntargets].found = 0;
                 ntargets++;
             }
@@ -372,6 +422,7 @@ int hm_mode_wordlist(int argc, char **argv)
             algo = HM_ALG_SHA256;
     }
     g_wl.algo = algo;
+    g_wl.use_bcrypt = use_bcrypt;
 
     g_wl.targets = targets;
     g_wl.ntargets = ntargets;

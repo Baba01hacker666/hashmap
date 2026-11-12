@@ -26,6 +26,7 @@
 typedef struct {
     uint8_t bytes[32];
     char hex[65];
+    char salt[48]; /* the bcrypt setting of this hash */
     int found;
 } want_t;
 
@@ -126,6 +127,7 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
 {
     FILE *f = fopen(path, "rb");
     char magic[HM_MAP_MAGIC_LEN];
+    char salt[64];
     int dlen = 16;
 
     if (f == NULL) {
@@ -145,18 +147,32 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
         char line[HM_MAP_MAX_HDR];
         bool seen = false;
 
-        while (fgets(line, sizeof(line), f) != NULL) {
-            char *nl = strpbrk(line, "\r\n");
+        salt[0] = '\0';
+        for (;;) {
+            long prev = ftell(f);
+            char *nl;
 
+            if (fgets(line, sizeof(line), f) == NULL)
+                break;
+            nl = strpbrk(line, "\r\n");
             if (nl != NULL)
                 *nl = '\0';
             if (strncmp(line, "dlen ", 5) == 0) {
                 dlen = atoi(line + 5);
                 seen = true;
-                break;
+                continue;
             }
-            if (line[0] == '\0')
-                break;
+            if (strncmp(line, "salt ", 5) == 0) {
+                snprintf(salt, sizeof(salt), "%.58s", line + 5);
+                continue;
+            }
+            if (strncmp(line, "algo ", 5) == 0)
+                continue;
+            /* anything else: the header is over, the records start here -
+             * put the line back (the records are binary) */
+            if (prev >= 0)
+                (void)fseek(f, prev, SEEK_SET);
+            break;
         }
         if (!seen || dlen < 1 || dlen > 32) {
             fprintf(stderr, "[-] %s has a broken header\n", path);
@@ -169,6 +185,22 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
                 path);
         fclose(f);
         return -1;
+    }
+
+    if (salt[0] != '\0') {
+        /* a bcrypt map: the hashes must use the same salt and cost */
+        for (int i = 0; i < nwants; i++) {
+            if (wants[i].salt[0] == '\0')
+                continue;
+            if (strcmp(wants[i].salt, salt) != 0) {
+                fprintf(stderr,
+                        "[-] the map was built with '%s' but the hash uses "
+                        "'%s'\n",
+                        salt, wants[i].salt);
+                fclose(f);
+                return -1;
+            }
+        }
     }
 
     for (;;) {
@@ -253,10 +285,18 @@ int hm_mode_search(int argc, char **argv)
                 fprintf(stderr, "[-] too many hashes\n");
                 goto out;
             }
-            if (hm_parse_target(hm_optarg, &tg) < 0)
-                goto out;
-            memcpy(wants[nwants].bytes, tg.bytes, strlen(tg.hex) / 2);
-            memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
+            if (hm_is_bcrypt_hash(hm_optarg)) {
+                if (hm_parse_bcrypt_target(hm_optarg, &tg,
+                                           wants[nwants].salt) < 0)
+                    goto out;
+                memcpy(wants[nwants].bytes, tg.bytes, 23);
+                memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
+            } else {
+                if (hm_parse_target(hm_optarg, &tg) < 0)
+                    goto out;
+                memcpy(wants[nwants].bytes, tg.bytes, strlen(tg.hex) / 2);
+                memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
+            }
             wants[nwants].found = 0;
             nwants++;
             break;
