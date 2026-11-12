@@ -223,7 +223,8 @@ static int hm_bc64_decode(uint8_t *out, size_t len, const char *in)
 /* the bcrypt hash itself                                               */
 /* ------------------------------------------------------------------ */
 
-static const uint8_t HM_BCRYPT_MAGIC[24] = "OrpheanBeholderScryDoubt";
+/* the magic is 24 bytes; the array holds the NUL as well */
+static const uint8_t HM_BCRYPT_MAGIC[25] = "OrpheanBeholderScryDoubt";
 
 /* parse "$2b$12$<22 salt><31 digest>" - returns 0 on success */
 static int bcrypt_parse(const char *hash, char *minor, int *cost,
@@ -306,7 +307,7 @@ int hm_bcrypt(const char *password, const char *setting, char *out,
         }
     }
 
-    memcpy(ciphertext, HM_BCRYPT_MAGIC, sizeof(ciphertext));
+    memcpy(ciphertext, HM_BCRYPT_MAGIC, 24);
     j = 0;
     for (int i = 0; i < HM_BCRYPT_WORDS; i++)
         cdata[i] = bf_stream2word(ciphertext, (uint16_t)(4 * HM_BCRYPT_WORDS),
