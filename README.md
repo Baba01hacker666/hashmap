@@ -43,9 +43,17 @@ hashmap wordlist -H <md5hex> -w wordlists/combined.txt
 ```
 
 The big list is never committed — it is fetched once and kept in the cloud
-(the `wordlists` release), together with its **hashmap** (every candidate with
-its MD5 digest, `maps` release). The workflows download them instead of
-rebuilding them.
+(the `wordlists` release), together with its **hashmaps** (every candidate with
+its MD5 and SHA-256 digest, `maps` release). The workflows download them
+instead of rebuilding them.
+
+MD5 and SHA-256 both work — the algorithm follows the hash you give (32 hex
+chars = MD5, 64 = SHA-256):
+
+```sh
+hashmap brute -H <sha256hex> -c alnum --max 6
+hashmap search -H <sha256hex> wordlist-map-sha256.hmmap
+```
 
 Pause and continue a long run:
 
