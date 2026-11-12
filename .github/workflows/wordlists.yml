@@ -99,10 +99,10 @@ jobs:
             echo "downloaded the published sha256 map"
           else
             echo "no published sha256 map - building it (once)"
-            # --truncate 16 keeps it the same size as the md5 map
+            # the full 32 byte digest: --truncate 16 would make it the size
+            # of the md5 map, but the full map verifies the whole digest
             ./hashmap map -o "$FARM_DIR/wordlist-map-sha256.hmmap" \
                 --wordlist "$FARM_DIR/combined.txt" --algo sha256 \
-                --truncate 16 \
                 --state "$FARM_DIR/map256.state" -t "$(nproc)"
             built=true
           fi
