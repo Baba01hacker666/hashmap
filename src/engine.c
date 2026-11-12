@@ -174,8 +174,10 @@ int hm_load_targets(const char *path, hm_target_t *targets, int *nt)
         nl = strpbrk(s, "\r\n");
         if (nl != NULL)
             *nl = '\0';
-        if (strlen(s) != 32) {
-            fprintf(stderr, "[-] hash file line not MD5 hex (32 chars): '%s'\n",
+        if (strlen(s) != 32 && strlen(s) != 64) {
+            fprintf(stderr,
+                    "[-] hash file line is not a 32 char (md5) or 64 char "
+                    "(sha256) hex string: '%s'\n",
                     s);
             fclose(f);
             return -1;
