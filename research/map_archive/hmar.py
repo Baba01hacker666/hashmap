@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import BinaryIO, Iterator, Sequence
+from typing import BinaryIO, Callable, Iterator, Sequence
 
 MAGIC = b"HMARCH1\n"
 BLOCK = 64
@@ -152,6 +152,8 @@ def pack_digests(rows: list[Row], header: Header) -> tuple[int, bytes]:
             digit = None if actual == pred else int.from_bytes(actual, "big") - (actual > pred)
             errors.append(digit)
         k = sum(e is not None for e in errors)
+        if k == 0:
+            return 0, b""  # one possible column; no rank bytes
         size = byte_width(ways(base, len(rows), k))
         if size < len(rows) * header.width:
             return k, rank(base, errors).to_bytes(size, "big")
@@ -163,6 +165,8 @@ def unpack_digests(src: BinaryIO, keys: list[bytes], header: Header, k: int) -> 
         return [exact(src, header.width) for _ in keys]
     if k > len(keys) or header.algo == "bcrypt":
         raise FormatError("invalid digest mode or exception count")
+    if k == 0:
+        return [header.predict(key) for key in keys]
     base = (1 << (8 * header.width)) - 1
     size = byte_width(ways(base, len(keys), k))
     r = int.from_bytes(exact(src, size), "big")
@@ -177,33 +181,46 @@ def unpack_digests(src: BinaryIO, keys: list[bytes], header: Header, k: int) -> 
     return digests
 
 
-def pack(src: BinaryIO, dst: BinaryIO) -> None:
+def pack_block(rows: list[Row], k: int, digests: bytes) -> bytes:
+    mode, keys = pack_keys(rows)
+    return bytes([mode | len(rows), k]) + keys + digests
+
+
+def unpack_block(src: BinaryIO, tag: int, header: Header) -> bytes:
+    n = tag & ~FRONT
+    if not 1 <= n <= BLOCK:
+        raise FormatError("invalid block size")
+    k = exact(src, 1)[0]
+    keys = unpack_keys(src, n, bool(tag & FRONT))
+    digests = unpack_digests(src, keys, header, k)
+    return map_bytes(list(zip(keys, digests, strict=True)))
+
+
+def pack_blocks(src: BinaryIO, dst: BinaryIO, magic: bytes, block_size: int,
+                encode: Callable[[list[Row], Header], bytes]) -> None:
     header = read_header(src)
     checksum = hashlib.sha256(header.raw)
-    dst.write(MAGIC + header.raw)
+    dst.write(magic + header.raw)
     records = read_rows(src, header.width)
-    while rows := list(islice(records, BLOCK)):
-        mode, keys = pack_keys(rows)
-        k, data = pack_digests(rows, header)
-        dst.write(bytes([mode | len(rows), k]) + keys + data)
+    while rows := list(islice(records, block_size)):
+        dst.write(encode(rows, header))
         checksum.update(map_bytes(rows))
     dst.write(b"\x00" + checksum.digest())
 
 
-def unpack(src: BinaryIO, dst: BinaryIO) -> None:
-    if exact(src, len(MAGIC)) != MAGIC:
-        raise FormatError("not an HMARCH1 archive")
+def pack(src: BinaryIO, dst: BinaryIO) -> None:
+    pack_blocks(src, dst, MAGIC, BLOCK,
+                lambda rows, header: pack_block(rows, *pack_digests(rows, header)))
+
+
+def unpack_blocks(src: BinaryIO, dst: BinaryIO,
+                  decode: Callable[[BinaryIO, int, Header], bytes]) -> None:
+    """Read the archive body *after* the caller has checked the magic."""
     header = read_header(src)
     checksum = hashlib.sha256(header.raw)
     dst.write(header.raw)
     while tag := exact(src, 1)[0]:
-        n = tag & ~FRONT
-        if not 1 <= n <= BLOCK:
-            raise FormatError("invalid block size")
-        k = exact(src, 1)[0]
-        keys = unpack_keys(src, n, bool(tag & FRONT))
-        digests = unpack_digests(src, keys, header, k)
-        data = map_bytes(list(zip(keys, digests, strict=True)))
+        data = decode(src, tag, header)
         checksum.update(data)
         dst.write(data)
     if exact(src, checksum.digest_size) != checksum.digest():
@@ -212,7 +229,13 @@ def unpack(src: BinaryIO, dst: BinaryIO) -> None:
         raise FormatError("trailing archive data")
 
 
-def convert(operation: str, source: Path, dest: Path) -> None:
+def unpack(src: BinaryIO, dst: BinaryIO) -> None:
+    if exact(src, len(MAGIC)) != MAGIC:
+        raise FormatError("not an HMARCH1 archive")
+    unpack_blocks(src, dst, unpack_block)
+
+
+def convert_file(transform: Callable[[BinaryIO, BinaryIO], None], source: Path, dest: Path) -> None:
     # Publish only a complete, checked file and never overwrite the source or
     # a concurrently created destination. Staging in dest.parent keeps the
     # hard link on one filesystem.
@@ -222,11 +245,15 @@ def convert(operation: str, source: Path, dest: Path) -> None:
     try:
         with source.open("rb") as src, tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as dst:
             temp = Path(dst.name)
-            {"pack": pack, "unpack": unpack}[operation](src, dst)
+            transform(src, dst)
         os.link(temp, dest)
     finally:
         if temp is not None:
             temp.unlink()
+
+
+def convert(operation: str, source: Path, dest: Path) -> None:
+    convert_file({"pack": pack, "unpack": unpack}[operation], source, dest)
 
 
 def main() -> int:

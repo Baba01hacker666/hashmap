@@ -42,10 +42,36 @@ portable: $(SRCS)
 test: $(BIN)
 	@./tests/run.sh
 
-# Standalone storage experiment; neither Python nor Lean is needed by the C CLI.
-.PHONY: archive-test archive-proof archive-experiment
-archive-test:
-	cd research/map_archive && python3 -B -m unittest -v test_hmar
+# Optional archive companion: a relocatable Python 3.10+ standard-library zipapp.
+# Neither Python nor Lean is needed by the C CLI.
+PYTHON ?= python3
+ARCHIVE_BUILD := build/hmarchive
+hashmap-archive: hmarchive.py research/__init__.py research/map_archive/hmar.py research/rsm1/rsm.py LICENSE
+	mkdir -p $(ARCHIVE_BUILD)/research/map_archive $(ARCHIVE_BUILD)/research/rsm1
+	cp hmarchive.py $(ARCHIVE_BUILD)/__main__.py
+	cp LICENSE $(ARCHIVE_BUILD)/
+	cp research/__init__.py $(ARCHIVE_BUILD)/research/
+	cp research/map_archive/hmar.py $(ARCHIVE_BUILD)/research/map_archive/
+	cp research/rsm1/rsm.py $(ARCHIVE_BUILD)/research/rsm1/
+	$(PYTHON) -m zipapp $(ARCHIVE_BUILD) -p '/usr/bin/env python3' -o $@
+
+.PHONY: archive-test archive-proof archive-experiment archive-compare install-archive evil-test evil-compare
+archive-test: hashmap-archive
+	cd research/map_archive && $(PYTHON) -B -m unittest -v test_hmar
+	$(PYTHON) -B -m unittest discover -s tests -p test_hmarchive.py -v
+
+evil-test:
+	$(PYTHON) -B -m unittest discover -s research/evil_codec -t . -p 'test_evil.py' -v
+
+evil-compare:
+	$(PYTHON) -B -m research.evil_codec.compare
+
+archive-compare:
+	$(PYTHON) -B -m research.map_archive.compare
+
+install-archive: hashmap-archive
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 $< $(DESTDIR)$(BINDIR)/hashmap-archive
 
 archive-proof:
 	cd research/map_archive && lean -DwarningAsError=true Archive.lean
@@ -75,6 +101,7 @@ install-hooks:
 	@echo "hooks enabled: Co-Authored-By trailers are now blocked"
 
 clean:
-	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable
+	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable hashmap-archive
+	rm -rf $(ARCHIVE_BUILD)
 
 -include $(DEPS)

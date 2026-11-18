@@ -27,7 +27,7 @@ A field lane begins with a one-byte codec tag, followed by its shape descriptor 
 
 1. A 32-byte literal-presence mask for byte IDs 0–255, and then one code length byte for each present literal, ascending by ID.
 2. `uv(number of multi-byte tokens)`, then one entry per token: `uv(token byte length)`, literal token bytes, and one code length byte. Token byte strings are in strict lexicographic order and get consecutive IDs beginning at 256. V1 limits the model to 96 multi-byte tokens of at most 24 bytes.
-3. The padded Huffman bitstream. Codes are canonical, sorted first by code length, then by numeric ID. Code lengths are 1–63. Decode expansions until the sum of the decoded field lengths is reached, then check padding and split using those lengths. The wire decoder does not need to know whether the encoder used a greedy or minimum-bit token parse.
+3. The padded Huffman bitstream. Codes are canonical, sorted first by code length, then by numeric ID. Code lengths are 1–63. Decode expansions until the sum of the decoded field lengths is reached, then check padding and split using those lengths. The wire decoder does not need to know whether the encoder used a greedy or minimum-bit token parse, or refitted the code lengths after parsing. A byte that occurs only inside token expansions does not need its own literal code.
 
 ## Optional cache frame
 

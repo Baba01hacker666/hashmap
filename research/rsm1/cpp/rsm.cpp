@@ -474,7 +474,7 @@ Bytes field_lane(const std::vector<View>& fields, Profile profile) {
     for (unsigned i = 256; i < 256 + vocab.size(); ++i) ++smooth[i];
     const auto lens = huffman_lengths(smooth);
     if (*std::max_element(lens.begin(), lens.end()) > 63) return best;
-    if (profile == Profile::rsm) {
+    if (profile == Profile::rsm || profile == Profile::refit) {
         freq.fill(0);
         for (Size i = 0; i < fields.size(); ++i) {
             plans[i] = tokenizer.optimal(fields[i], lens);
@@ -484,6 +484,25 @@ Bytes field_lane(const std::vector<View>& fields, Profile profile) {
     try_huffman(freq, lens, vocab, [&](auto emit) {
         for (const auto& plan : plans) for (unsigned id : plan) emit(id);
     });
+    if (profile == Profile::refit) {
+        // The parse is fixed now; train on its actual counts, without paying
+        // for unused fallback symbols. Token IDs on the wire must be contiguous.
+        Histogram counts{};
+        std::array<unsigned, symbols> ids{};
+        std::vector<Bytes> used;
+        for (unsigned id = 0; id < symbols; ++id) {
+            if (!freq[id]) continue;
+            ids[id] = id;
+            if (id >= 256) {
+                ids[id] = 256 + static_cast<unsigned>(used.size());
+                used.push_back(vocab[id - 256]);
+            }
+            counts[ids[id]] = freq[id];
+        }
+        try_huffman(counts, huffman_lengths(counts), used, [&](auto emit) {
+            for (const auto& plan : plans) for (unsigned id : plan) emit(ids[id]);
+        });
+    }
     return best;
 }
 

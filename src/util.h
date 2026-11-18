@@ -24,6 +24,11 @@ void hm_sleep_ms(unsigned ms);
 int hm_fsync(FILE *f);
 int hm_cpu_count(void);
 
+/* run the hashmap-archive companion: pack the finished map SRC into the
+ * new file DST (never overwritten). The tool is found via HM_ARCHIVE or
+ * PATH. Returns 0 on success; prints its own error and returns -1. */
+int hm_pack_archive(const char *src, const char *dst);
+
 /* --- portable getopt_long subset (no GNU dependency) --- */
 typedef struct {
     const char *name; /* long option name without "--" */

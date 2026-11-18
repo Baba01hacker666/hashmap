@@ -4,6 +4,7 @@
  */
 #include "compat.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,8 @@
 #include <io.h>
 #include <windows.h>
 #else
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -347,3 +350,53 @@ void hm_getopt_reset(void)
     hm_optind = 1;
     hm_optarg = NULL;
 }
+
+#if defined(_WIN32)
+int hm_pack_archive(const char *src, const char *dst)
+{
+    (void)src;
+    (void)dst;
+    fprintf(stderr, "[-] --archive is not supported on this platform; pack "
+                    "the map afterwards with hashmap-archive instead\n");
+    return -1;
+}
+#else
+int hm_pack_archive(const char *src, const char *dst)
+{
+    const char *tool = getenv("HM_ARCHIVE");
+    pid_t pid;
+    int status;
+
+    if (tool == NULL || tool[0] == '\0')
+        tool = "hashmap-archive";
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "[-] cannot start %s: %s\n", tool, strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        execlp(tool, tool, "pack", "--", src, dst, (char *)NULL);
+        _exit(errno == ENOENT ? 127 : 126); /* not found / not executable */
+    }
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            fprintf(stderr, "[-] cannot wait for %s: %s\n", tool,
+                    strerror(errno));
+            return -1;
+        }
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
+            fprintf(stderr,
+                    "[-] '%s' not found - build it with 'make "
+                    "hashmap-archive', install it with 'make install-archive', "
+                    "or point HM_ARCHIVE at it\n",
+                    tool);
+        else
+            fprintf(stderr, "[-] %s pack failed (see its message above)\n",
+                    tool);
+        return -1;
+    }
+    return 0;
+}
+#endif

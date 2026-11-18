@@ -1,6 +1,8 @@
 hashmap
 hashmap-debug
 hashmap-portable
+/hashmap-archive
+/build/
 *.o
 *.d
 bench*.txt

@@ -12,7 +12,7 @@ from time import perf_counter_ns
 import zlib
 
 from bench import get_cpython, opaque_map, template_maps
-from rsm import (Candidates, MAGIC, PROFILES, elias, frame, lane_candidates, read_json,
+from rsm import (Candidates, MAGIC, PROFILES, elias, frame, lane_candidates, pack, read_json,
                  unpack, uv, write_json)
 
 ROOT = Path(__file__).resolve().parent
@@ -32,9 +32,13 @@ def compare_dataset(exe: Path, work: Path, dataset: str, mapping, cache,
     cpp_archives = {}
     sizes = {}
     variants = Candidates(mapping, cache)
-    for profile in PROFILES:
-        expected, _ = variants.archive(profile)
-        assert sha256(expected).hexdigest() == reference[dataset, profile]["sha256"], (dataset, profile, "reference")
+    for profile in (*PROFILES, "refit"):
+        if profile == "refit":
+            expected = pack(mapping, cache, refit=True)
+            assert len(expected) <= sizes["rsm"], (dataset, "refit size regression")
+        else:
+            expected, _ = variants.archive(profile)
+            assert sha256(expected).hexdigest() == reference[dataset, profile]["sha256"], (dataset, profile, "reference")
         run(exe, "pack", source, archive, "--profile", profile)
         actual = archive.read_bytes()
         assert actual == expected, (dataset, profile, "Python/C++ archive mismatch")
@@ -52,7 +56,7 @@ def compare_dataset(exe: Path, work: Path, dataset: str, mapping, cache,
     saved = sizes["plain"] - sizes["rsm"]
     return {"dataset": dataset, "entries": len(mapping), "plain_bytes": sizes["plain"],
             "structural_bytes": sizes["structural"], "byte_huff_bytes": sizes["byte-huff"],
-            "greedy_bytes": sizes["greedy"], "rsm_bytes": sizes["rsm"], "saved_bytes": saved,
+            "greedy_bytes": sizes["greedy"], "rsm_bytes": sizes["rsm"], "refit_bytes": sizes["refit"], "saved_bytes": saved,
             "saved_pct": round(100 * saved / sizes["plain"], 4),
             "zlib9_structural_bytes": len(zlib.compress(cpp_archives["structural"], level=9)),
             "cpp_pack_ms_median": encode_ms, "cpp_unpack_ms_median": decode_ms,

@@ -476,6 +476,36 @@ BC_TEST='$2b$04$DCq7YPn5Rq63x1Lad4cll.Fg1U403/BHS4qgV12/Ne2EXGwnxTDPm'
 "$BIN" brute -H "$BC_TEST" -c digits --max 3 >/dev/null 2>&1
 [ $? -eq 0 ] && ok "bcrypt: brute force works" || bad "bcrypt: brute force works"
 
+# --archive: map output packed by the hashmap-archive companion (v2 default)
+ARCH="$PWD/hashmap-archive"
+if [ -x "$ARCH" ]; then
+    HM_ARCHIVE="$ARCH" "$BIN" map -o "$TMP/arch.hmar" -c digits \
+        --min 1 --max 2 --archive --state "$TMP/arch.state" >/dev/null 2>&1
+    if [ $? -eq 0 ] && [ -f "$TMP/arch.hmar" ] && [ ! -e "$TMP/arch.hmar.hmmap.tmp" ]; then
+        "$ARCH" unpack "$TMP/arch.hmar" "$TMP/arch.hmmap" 2>/dev/null
+        out=$("$BIN" search -H "$(md5_of 42)" "$TMP/arch.hmmap" 2>/dev/null)
+        case "$out" in
+            *":42") ok "archive: map --archive packs via the companion" ;;
+            *) bad "archive: map --archive packs via the companion (got=$out)" ;;
+        esac
+    else
+        bad "archive: map --archive packs via the companion"
+    fi
+    # an existing archive destination is never overwritten
+    HM_ARCHIVE="$ARCH" "$BIN" map -o "$TMP/arch.hmar" -c digits \
+        --max 2 --archive --state "$TMP/arch2.state" >/dev/null 2>&1
+    [ $? -ne 0 ] && ok "archive: an existing .hmar is never overwritten" \
+        || bad "archive: an existing .hmar is never overwritten"
+    # a missing companion fails but keeps the complete plain map
+    HM_ARCHIVE=/nonexistent "$BIN" map -o "$TMP/nope.hmar" -c digits --max 2 \
+        --archive --state "$TMP/nope.state" >/dev/null 2>&1
+    [ $? -ne 0 ] && [ -f "$TMP/nope.hmar.hmmap.tmp" ] \
+        && ok "archive: missing companion keeps the plain map" \
+        || bad "archive: missing companion keeps the plain map"
+else
+    printf '  \033[33mSKIP\033[0m archive tests: ./hashmap-archive not built\n'
+fi
+
 # ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

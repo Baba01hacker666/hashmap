@@ -55,6 +55,7 @@ void hm_usage_all(const char *prog)
         "  %s map -o digs.hmmap -c digits --max 4\n"
         "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
         "\n"
+        "lossless storage of finished maps: hashmap-archive (optional; docs/archive.md)\n"
         "more: docs/usage.md, docs/resume.md, docs/workflows.md\n",
         HM_VERSION, prog, prog, prog, prog, prog);
 }
@@ -138,6 +139,9 @@ void hm_usage_map(void)
         "      --state <file>         state file (default: hashmap-map.state)\n"
         "      --bcrypt               bcrypt digests for the salt of --salt\n"
         "      --bcrypt-cost <n>      the cost of that map (default 12)\n"
+        "      --archive              pack the finished map into HMARCH2 via the\n"
+        "                             hashmap-archive companion (v2 is its\n"
+        "                             default), then remove the plain map\n"
         "      --fresh                ignore and delete an existing state file\n"
         "  -h, --help                 this help\n"
         "\n"
@@ -147,8 +151,9 @@ void hm_usage_map(void)
         "\n"
         "examples:\n"
         "  %s map -o digs.hmmap -c digits --min 1 --max 4\n"
-        "  %s map -o digs.hmmap -c alnum --max 5 --state map.state\n",
-        hm_prog, hm_prog, hm_prog);
+        "  %s map -o digs.hmmap -c alnum --max 5 --state map.state\n"
+        "  %s map -o digs.hmar -c digits --max 4 --archive\n",
+        hm_prog, hm_prog, hm_prog, hm_prog);
 }
 
 void hm_usage_search(void)
