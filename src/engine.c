@@ -1461,6 +1461,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "truncate", 1, 8 },
         { "bcrypt", 0, 9 },
         { "bcrypt-cost", 1, 10 },
+        { "archive", 0, 11 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -1586,6 +1587,13 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 return -1;
             }
             cfg->use_bcrypt = 1;
+            break;
+        case 11: /* archive: pack the finished map via hashmap-archive */
+            if (want_targets) {
+                fprintf(stderr, "[-] --archive is only valid in map mode\n");
+                return -1;
+            }
+            cfg->archive = 1;
             break;
         case 7: /* algo */
             if (hm_algo_parse(hm_optarg, &cfg->algo) < 0) {

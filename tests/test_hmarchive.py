@@ -1,6 +1,7 @@
 """Ordered HMMAP -> archive -> byte-identical HMMAP, including both wire versions."""
 
 from hashlib import sha256
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import random
@@ -179,6 +180,64 @@ class ArchiveTests(unittest.TestCase):
             src.write_bytes(SHA + bytes(31))
             cli("pack", src, restored, ok=False)
             self.assertEqual(set(root.iterdir()), {packed, src})
+
+
+BIN = EXE.with_name("hashmap")
+
+
+@unittest.skipUnless(BIN.exists() and EXE.exists(), "needs the C binary and the zipapp")
+class ToolArchiveTests(unittest.TestCase):
+    """The C tool's --archive flag packs map output through the companion."""
+
+    def run_tool(self, *args, env_tool=str(EXE)):
+        import os
+        env = dict(os.environ, HM_ARCHIVE=env_tool)
+        return subprocess.run([str(BIN), *args], env=env, capture_output=True)
+
+    def test_map_archive_roundtrip_and_staging(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            dest, state = root / "digs.hmar", root / "run.state"
+            result = self.run_tool("map", "-o", str(dest), "--archive", "-c", "digits",
+                                   "--min", "1", "--max", "2", "--state", str(state))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(dest.exists())
+            self.assertFalse((root / "digs.hmar.hmmap.tmp").exists())  # staging removed
+            self.assertFalse(state.exists())                           # finished run cleans up
+
+            restored = root / "restored.hmmap"
+            self.assertEqual(subprocess.run([str(EXE), "unpack", str(dest), str(restored)],
+                                            capture_output=True).returncode, 0)
+            data = restored.read_bytes()
+            stream = BytesIO(data)
+            header = hmar.read_header(stream)
+            rows = list(hmar.read_rows(stream, header.width))
+            self.assertEqual(len(rows), 110)  # digits 1..2 long
+            self.assertIn((b"42", hashlib.md5(b"42").digest()), rows)
+
+            again = self.run_tool("map", "-o", str(dest), "--archive", "-c", "digits",
+                                  "--max", "2", "--state", str(root / "two.state"))
+            self.assertEqual(again.returncode, 2)      # never overwrite an archive
+            self.assertIn(b"never overwritten", again.stderr)
+
+    def test_map_archive_missing_companion_keeps_map(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            dest = root / "digs.hmar"
+            result = self.run_tool("map", "-o", str(dest), "--archive", "-c", "digits",
+                                   "--max", "2", "--state", str(root / "run.state"),
+                                   env_tool="/nonexistent/hashmap-archive")
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(dest.exists())
+            self.assertIn(b"not found", result.stderr)
+            staging = root / "digs.hmar.hmmap.tmp"
+            self.assertTrue(staging.exists())          # the complete map survives
+            packed, out = root / "late.hmar", root / "late.hmmap"
+            self.assertEqual(subprocess.run([str(EXE), "pack", str(staging), str(packed)],
+                                            capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run([str(EXE), "unpack", str(packed), str(out)],
+                                            capture_output=True).returncode, 0)
+            self.assertEqual(out.read_bytes(), staging.read_bytes())
 
 
 if __name__ == "__main__":

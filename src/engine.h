@@ -55,6 +55,10 @@ typedef struct {
     int use_bcrypt;
     char bcrypt_salt[48];
 
+    /* map mode: pack the finished map into HMARCH2 via the hashmap-archive
+     * companion instead of leaving the plain .hmmap on disk */
+    int archive;
+
     /* map mode: stream of binary records (NULL = plain brute mode) */
     FILE *rec;
 

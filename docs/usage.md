@@ -34,6 +34,7 @@ The same flag means the same thing in every mode.
 | `--state <file>` | state file: pause/resume a long run |
 | `--bcrypt` | map mode: bcrypt digests for the salt of `--salt` |
 | `--bcrypt-cost <n>` | the cost of that bcrypt map (default 12) |
+| `--archive` | map mode: pack the finished map into HMARCH2 via `hashmap-archive` (needs Python 3.10+; v2 is its default), then remove the plain map |
 | `--fresh` | ignore and delete an existing state file |
 | `-h, --help` / `-v, --version` | help / version |
 
@@ -108,6 +109,21 @@ digest — still a 2^-128 match probability — so the map stays the same size:
 hashmap map -o s.hmmap --wordlist combined.txt --algo sha256 --truncate 16
 ```
 
+### Archiving the map (`--archive`)
+
+With `--archive` the map is written to a staging file and, once the whole
+keyspace finished, packed into [HMARCH2](archive.md) by the
+`hashmap-archive` companion — then the plain map is removed:
+
+```sh
+hashmap map -o digs.hmar -c digits --max 6 --archive
+```
+
+The destination is never overwritten. If the companion is missing (build it
+with `make hashmap-archive`, or point `HM_ARCHIVE` at it), the complete plain
+map is kept at `<out>.hmmap.tmp` and the command fails — nothing is lost.
+Resume works as usual: an interrupted run continues appending to the staging
+file. To search an archived map, unpack it first (`hashmap-archive unpack`).
 Map files carry their algorithm and digest length in the header
 (`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.
 

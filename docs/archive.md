@@ -11,6 +11,11 @@ cmp assets.hmmap restored.hmmap
 
 The executable can be copied by itself to another machine with Python, or installed with `make install-archive`. In the checkout, `python3 hmarchive.py ...` works without a build. The default build and the C binary do not need Python.
 
+`hashmap map --archive` packs a map through this companion the moment the
+keyspace finishes (see [usage](usage.md#archiving-the-map---archive)) — the
+C tool writes the plain map to a staging file, the companion publishes the
+HMARCH2 destination, and the plain map is removed.
+
 `pack` writes **HMARCH2**. `unpack` detects HMARCH1 and HMARCH2; use `pack --legacy` for a recipient with only the original HMARCH1 decoder. Destinations must not exist. Output is staged in the destination directory and published by hard link only on success, so a bad checksum, truncated input or concurrently created destination does not publish a partial restore or clobber a file. This requires a filesystem with hard-link support. SHA-256 checks the restored bytes; it does not authenticate the sender.
 
 ## How much smaller?

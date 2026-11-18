@@ -33,6 +33,8 @@ make hashmap-archive      # Python 3.10+, no third-party packages
 cmp assets.hmmap restored.hmmap
 ```
 
+Or build a map straight into the archive: `./hashmap map -o digs.hmar --archive -c digits --max 6`.
+
 On the CPython path/Git-ID fixture this took **129,774 bytes**, down from **161,449** with the previous archive. See [archive usage, comparisons and limits](docs/archive.md); reproduce with `make archive-compare`.
 
 ## Quick start
