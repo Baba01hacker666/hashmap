@@ -10,8 +10,10 @@ directory measures *how much* the idea can compress and where its ceiling is.
 
 One field is `uv(count) u8 mode payload`. Modes: **RAW** (verbatim),
 **EVIL-A** (the tiered nibble code), **EVIL-H** (pure hex text, one nibble
-per character). The encoder picks the cheapest, so a field is never more
-than two bytes worse than verbatim.
+per character). The encoder picks the cheapest. Framing is `uv(count)` plus
+one mode byte, so the overhead over verbatim is at most two bytes for fields
+of length 0–127, and three bytes for lengths 128–255 (the count takes two
+bytes there).
 
 EVIL-A tiers — all codes are whole nibbles, most-significant first:
 
@@ -43,7 +45,7 @@ with `make evil-test`.
 | Data | EVIL | Entropy | Alphabet |
 |---|---:|---:|---:|
 | PIN codes | 4.02 | 3.32 | 10 symbols |
-| Wordlist words | 8.00 | 4.84 | 36 symbols |
+| Wordlist words | 8.00 | 4.65 | 33 symbols |
 | Hex text | 4.02 | 4.00 | 16 symbols |
 
 ## Why it loses — and the one place it is *optimal*
@@ -51,7 +53,7 @@ with `make evil-test`.
 1. **16 short slots, 36+ common symbols.** Digits and five specials fill the
    4-bit tier; every letter then costs 8–12 bits — the same as, or worse
    than, the ASCII it replaced. The measured 8.00 bits/char on wordlist text
-   (entropy 4.84) is this effect exactly: a nibble is too small a currency
+   (entropy 4.65) is this effect exactly: a nibble is too small a currency
    for a 36-symbol alphabet.
 2. **A fixed code can't adapt.** Digit entropy is 3.32 bits, so even on its
    best alphabet EVIL sits 21% above entropy; adaptive byte-Huffman sits on

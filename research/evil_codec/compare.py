@@ -115,10 +115,14 @@ def main() -> None:
             sample = keys
         else:
             sample = keys * 64
-        counts = Counter(sample)
-        total = len(sample)
+        # pack_field caps a field at 255 bytes, so codec_stats only encodes
+        # this prefix. Measure entropy on the exact same bytes - including
+        # the hex prefix's padding nibble - instead of the full sample.
+        bounded = sample[:255]
+        counts = Counter(bounded)
+        total = len(bounded)
         entropy = -sum(c / total * math.log2(c / total) for c in counts.values())
-        stats = evil.codec_stats(sample[:255])
+        stats = evil.codec_stats(bounded)
         print(f"{label:<24} {stats:>13.2f} {entropy:>17.2f}   {len(counts)} symbols")
 
     # EVIL's ceiling: drop the per-field headers, one stream per file.

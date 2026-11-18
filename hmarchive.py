@@ -122,19 +122,31 @@ def read_digests(src: BinaryIO, keys: list[bytes], header: hmar.Header) -> list[
         raise hmar.FormatError("invalid table bitmap padding")
     bits = rsm.BitReader(hmar.exact(src, index_bytes))
     digests = []
+    seen = set()
     next_new = 0
     for i in range(len(keys)):
         if mask and not mask[i // 8] & (1 << (i % 8)):
             index = next_new
             next_new += 1
+            seen.add(index)
         else:
             index = bits.get(width)
-            if mask and index >= next_new:
-                raise hmar.FormatError("forward digest table reference")
+            if mask:
+                if index >= next_new:
+                    raise hmar.FormatError("forward digest table reference")
+            elif index not in seen:
+                # Dense tables store every reference. The table is in
+                # first-occurrence order, so a new index must be the next
+                # entry; otherwise a reordered table silently restores the
+                # rows in the wrong order.
+                if index != next_new:
+                    raise hmar.FormatError("digest table out of first-occurrence order")
+                seen.add(index)
+                next_new += 1
         if index >= count:
             raise hmar.FormatError("invalid digest table index")
         digests.append(table[index])
-    if mask and next_new != count:
+    if next_new != count:
         raise hmar.FormatError("incorrect number of table indices")
     bits.pad()
     return digests

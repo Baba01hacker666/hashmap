@@ -78,12 +78,27 @@ int hm_mode_map(int argc, char **argv)
         snprintf(cfg.state_path, sizeof(cfg.state_path), "hashmap-map.state");
     }
 
+#if defined(_WIN32)
+    /* Reject before generating anything: the companion stub is unsupported
+     * here, and packing a whole map only to fail at the end wastes the run. */
+    if (cfg.archive) {
+        fprintf(stderr, "[-] --archive is not supported on Windows; generate a "
+                        "plain map and pack it with hashmap-archive instead\n");
+        return 2;
+    }
+#endif
+
     /* --archive: build the plain map at a staging path; only a complete,
      * checksummed map is packed into the HMARCH2 destination. */
     char staging[HM_MAX_STATE_PATH + 16];
     const char *map_path = cfg.out_path;
     if (cfg.archive) {
         int n;
+        if (strcmp(cfg.state_path, cfg.out_path) == 0) {
+            fprintf(stderr, "[-] --state and -o must be different paths when "
+                            "archiving; choose a separate state path\n");
+            return 2;
+        }
         if (file_exists(cfg.out_path)) {
             fprintf(stderr, "[-] '%s' already exists - archives are never "
                             "overwritten\n", cfg.out_path);
@@ -92,6 +107,12 @@ int hm_mode_map(int argc, char **argv)
         n = snprintf(staging, sizeof(staging), "%s.hmmap.tmp", cfg.out_path);
         if (n < 0 || (size_t)n >= sizeof(staging)) {
             fprintf(stderr, "[-] output path too long for a staging file\n");
+            return 2;
+        }
+        if (strcmp(cfg.state_path, staging) == 0) {
+            fprintf(stderr, "[-] --state '%s' cannot also be the staging map "
+                            "'%s'; choose a separate state path\n",
+                    cfg.state_path, staging);
             return 2;
         }
         map_path = staging;
@@ -115,7 +136,10 @@ int hm_mode_map(int argc, char **argv)
             return 2;
         }
 
-        cfg.rec = fopen(map_path, resuming ? "ab" : "wb");
+        /* A fresh archive run must never truncate a completed staging map
+         * that an earlier failed pack left behind. Resumes still append, and
+         * plain maps keep their truncating behaviour. */
+        cfg.rec = fopen(map_path, resuming ? "ab" : (cfg.archive ? "wbx" : "wb"));
         if (cfg.rec == NULL) {
             fprintf(stderr, "[-] cannot write %s: %s\n", map_path,
                     strerror(errno));
@@ -158,7 +182,9 @@ int hm_mode_map(int argc, char **argv)
     if (cfg.archive) {
         if (hm_pack_archive(map_path, cfg.out_path) != 0) {
             fprintf(stderr, "[-] the complete map is kept at '%s'; pack it "
-                            "later or rerun the same command\n", map_path);
+                            "once the companion is available:\n", map_path);
+            fprintf(stderr, "[-]   hashmap-archive pack '%s' '%s'\n",
+                    map_path, cfg.out_path);
             return 1;
         }
         if (remove(map_path) != 0)

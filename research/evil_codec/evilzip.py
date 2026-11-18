@@ -3,7 +3,8 @@
 Research only. HMARCH2 is the real codec; this exists to measure how far the
 fixed nibble code (evil.py) takes whole files against the adaptive RSM1 lanes.
 The digest lane is HMARCH1's exact prediction/ranked encoding, reused per
-group, so the comparison isolates the key lane.
+group. Whole-file sizes therefore include the digest encoding and the group
+boundaries as well as the key codec; they do not isolate the key lane alone.
 
     "EVIL1\n", original HMMAP header bytes
     groups: u8 1, uv(n), uv(key lane bytes), n EVIL key fields,
@@ -29,6 +30,13 @@ MAX_KEY_LANE = GROUP * (2 + 1 + (5 * 255 + 1) // 2)
 def pack_group(rows: list[hmar.Row], header: hmar.Header) -> bytes:
     keys = b"".join(evil.pack_field(key) for key, _ in rows)
     k, digests = hmar.pack_digests(rows, header)
+    if k >= hmar.LITERAL:
+        # k is a selector byte here, and 0xFF is reserved for literal digests.
+        # A ranked count of 255 would be read as literal mode (and 256+ cannot
+        # even be written), so keep ranked counts through 254 and fall back to
+        # verbatim digests for every larger miss count.
+        digests = b"".join(digest for _, digest in rows)
+        k = hmar.LITERAL
     return bytes([TAG_GROUP]) + evil.uv(len(rows)) + evil.uv(len(keys)) + keys + bytes([k]) + digests
 
 

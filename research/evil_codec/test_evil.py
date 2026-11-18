@@ -169,6 +169,32 @@ class FileTests(unittest.TestCase):
                 for i in range(evilzip.GROUP + 7)]
         self.roundtrip(header + hmar.map_bytes(rows))
 
+    def test_high_digest_miss_counts(self):
+        # 0xFF is the literal-digest selector. A ranked count of 255 used to
+        # be written as 0xFF (decoded as literal), and 256+ could not be
+        # written at all. Ranked must survive through 254; larger groups fall
+        # back to literal digests and still round-trip.
+        header = b"HMMAP 2\nalgo sha256\ndlen 32\n"
+        for misses in (254, 255, 256):
+            rows = []
+            for i in range(300):
+                key = f"row-{i:04d}".encode()
+                pred = hashlib.sha256(key).digest()
+                digest = bytes([pred[0] ^ 0xFF]) + pred[1:] if i < misses else pred
+                rows.append((key, digest))
+            packed = self.roundtrip(header + hmar.map_bytes(rows))
+
+            stream = BytesIO(packed)
+            stream.read(len(evilzip.MAGIC) + len(header))
+            self.assertEqual(stream.read(1), bytes([evilzip.TAG_GROUP]))
+            self.assertEqual(evil.read_uv(stream), 300)
+            stream.read(evil.read_uv(stream))  # the EVIL key lane
+            selector = stream.read(1)[0]
+            if misses < hmar.LITERAL:
+                self.assertNotEqual(selector, hmar.LITERAL)
+            else:
+                self.assertEqual(selector, hmar.LITERAL)
+
     def corrupt_rejects(self, original: bytes):
         packed = BytesIO()
         evilzip.pack(BytesIO(original), packed)

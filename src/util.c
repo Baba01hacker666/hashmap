@@ -375,7 +375,7 @@ int hm_pack_archive(const char *src, const char *dst)
         return -1;
     }
     if (pid == 0) {
-        execlp(tool, tool, "pack", src, dst, (char *)NULL);
+        execlp(tool, tool, "pack", "--", src, dst, (char *)NULL);
         _exit(errno == ENOENT ? 127 : 126); /* not found / not executable */
     }
     while (waitpid(pid, &status, 0) < 0) {

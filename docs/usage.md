@@ -112,17 +112,28 @@ hashmap map -o s.hmmap --wordlist combined.txt --algo sha256 --truncate 16
 ### Archiving the map (`--archive`)
 
 With `--archive` the map is written to a staging file and, once the whole
-keyspace finished, packed into [HMARCH2](archive.md) by the
+keyspace is complete, packed into [HMARCH2](archive.md) by the
 `hashmap-archive` companion — then the plain map is removed:
 
 ```sh
 hashmap map -o digs.hmar -c digits --max 6 --archive
 ```
 
-The destination is never overwritten. If the companion is missing (build it
-with `make hashmap-archive`, or point `HM_ARCHIVE` at it), the complete plain
-map is kept at `<out>.hmmap.tmp` and the command fails — nothing is lost.
-Resume works as usual: an interrupted run continues appending to the staging
+`map --archive` is not supported on Windows; generate a plain map and pack it
+afterwards with `hashmap-archive` there (standalone `pack`/`unpack` work on
+every platform). The destination is never overwritten. If the companion is
+missing (build it with `make hashmap-archive`, or point `HM_ARCHIVE` at it),
+the complete plain map is kept at `<out>.hmmap.tmp` and the command fails —
+nothing is lost. Once the companion is available, pack that staging file
+yourself with an unused destination:
+
+```sh
+hashmap-archive pack digs.hmar.hmmap.tmp digs.hmar
+```
+
+Keep the staging file until packing succeeds: a fresh archive run will not
+overwrite an existing staging map. Resume works as usual: an interrupted run
+(one that saved state but did not finish) continues appending to the staging
 file. To search an archived map, unpack it first (`hashmap-archive unpack`).
 Map files carry their algorithm and digest length in the header
 (`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.

@@ -156,6 +156,20 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ar.read_digests(BytesIO(b"\xfd\x00\x08abcdefgh" + mask + b"\x00"), [b""] * 9, header)
 
+    def test_dense_table_requires_first_occurrence_order(self):
+        header = hmar.read_header(BytesIO(SHORT))
+        # n=3, count=3, dense 2-bit indices: canonical first-occurrence [0,1,2].
+        lane = b"\xfd\x00\x03abc" + b"\x18"
+        inp = BytesIO(lane)
+        self.assertEqual(ar.read_digests(inp, [b""] * 3, header), [b"a", b"b", b"c"])
+        self.assertEqual(inp.read(), b"")
+        # [1,0,...] reorders the table and silently restores the wrong rows.
+        with self.assertRaises(ValueError):
+            ar.read_digests(BytesIO(b"\xfd\x00\x03abc" + b"\x44"), [b""] * 3, header)
+        # A table entry that is never referenced must also be rejected.
+        with self.assertRaises(ValueError):
+            ar.read_digests(BytesIO(b"\xfd\x00\x03abc" + b"\x10"), [b""] * 3, header)
+
     def test_cli_staging_and_versions(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

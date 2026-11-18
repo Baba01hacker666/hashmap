@@ -203,7 +203,10 @@ def _decode_h(payload: bytes, count: int) -> tuple[bytes, int]:
 def _decode_mode(reader: Reader, mode: int, count: int) -> bytes:
     if mode == RAW:
         return reader.take(count)
-    payload = reader.data[reader.pos:]  # modes self-terminate after `count` symbols
+    # A view avoids copying the rest of the key lane for every field: nibble
+    # modes self-terminate after `count` symbols, so the unused suffix is
+    # never read but used to be sliced into a fresh bytes object each time.
+    payload = memoryview(reader.data)[reader.pos:]
     if mode == EVIL_A:
         field, used = _decode_a(payload, count)
     elif mode == EVIL_H:
@@ -222,6 +225,8 @@ def unpack_field(reader: Reader, max_len: int = MAX_FIELD) -> bytes:
 
 
 def unpack_fields(wire: bytes, lengths: list[int]) -> list[bytes]:
+    if any(length < 0 for length in lengths):
+        raise EvilError("negative field length")
     reader = Reader(wire)
     if reader.read_uv() != sum(lengths):
         raise EvilError("length table does not match the stream")
