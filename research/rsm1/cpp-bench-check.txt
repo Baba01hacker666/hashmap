@@ -1,0 +1,6 @@
+python3 bench_cpp.py --exe build/rsm_cpp
+structured-text: 2,499,309 → 349,196 bytes; saved 2,150,113 (86.03%); median 179.2 ms pack / 30.4 ms unpack
+mixed-cache: 2,275,402 → 726,110 bytes; saved 1,549,292 (68.09%); median 145.1 ms pack / 34.3 ms unpack
+opaque-digest-keys: 4,194,325 → 4,079,637 bytes; saved 114,688 (2.73%); median 136.3 ms pack / 57.4 ms unpack
+cpython-paths: 252,092 → 130,748 bytes; saved 121,344 (48.13%); median 32.7 ms pack / 8.0 ms unpack
+PASS: 20 byte-identical Python/C++ archives; all round-tripped in both directions; 12 extra forced Elias-Fano cases.

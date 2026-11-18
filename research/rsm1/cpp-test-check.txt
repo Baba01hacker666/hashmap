@@ -1,0 +1,22 @@
+build/rsm_test
+C++ tests passed (empty maps, 4 cache modes, 96 seeded maps, 6 fixed-width key cases, limits and truncations).
+build/rsm_cpp pack example.json build/sample.rsm
+cmp example.rsm build/sample.rsm
+build/rsm_cpp unpack example.rsm build/sample.json
+cmp example.json build/sample.json
+make BUILD=build/sanitize CXXFLAGS='-std=c++20 -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie' LDFLAGS='-fsanitize=address,undefined -no-pie' check
+make[1]: Entering directory '/home/user/exactmap_research'
+mkdir -p build/sanitize
+g++  -std=c++20 -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -MMD -MP -c cpp/main.cpp -o build/sanitize/main.o
+g++  -std=c++20 -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -MMD -MP -c cpp/rsm.cpp -o build/sanitize/rsm.o
+ar rcs build/sanitize/librsm1.a build/sanitize/rsm.o
+g++ -fsanitize=address,undefined -no-pie -o build/sanitize/rsm_cpp build/sanitize/main.o build/sanitize/librsm1.a -lcrypto
+g++  -std=c++20 -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -MMD -MP -c cpp/test.cpp -o build/sanitize/test.o
+g++ -fsanitize=address,undefined -no-pie -o build/sanitize/rsm_test build/sanitize/test.o build/sanitize/librsm1.a -lcrypto
+build/sanitize/rsm_test
+C++ tests passed (empty maps, 4 cache modes, 96 seeded maps, 6 fixed-width key cases, limits and truncations).
+build/sanitize/rsm_cpp pack example.json build/sanitize/sample.rsm
+cmp example.rsm build/sanitize/sample.rsm
+build/sanitize/rsm_cpp unpack example.rsm build/sanitize/sample.json
+cmp example.json build/sanitize/sample.json
+make[1]: Leaving directory '/home/user/exactmap_research'

@@ -1,0 +1,9 @@
+/build/
+/__pycache__/
+*.pyc
+*.o
+*.d
+*.a
+*.olean
+*.ilean
+.DS_Store

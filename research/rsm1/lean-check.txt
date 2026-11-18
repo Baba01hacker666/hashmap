@@ -1,0 +1,15 @@
+Lean (version 4.19.0, x86_64-unknown-linux-gnu, commit 6caaee842e94, Release)
+'RSM.front_roundtrip' depends on axioms: [propext]
+'RSM.chunks_roundtrip' depends on axioms: [propext]
+'RSM.pred_roundtrip' depends on axioms: [propext]
+'RSM.structured_roundtrip' depends on axioms: [propext]
+'RSM.sparse_mask_roundtrip' depends on axioms: [propext]
+'RSM.ef_roundtrip' depends on axioms: [propext, Classical.choice, Quot.sound]
+'RSM.ef_high_length' depends on axioms: [propext, Classical.choice, Quot.sound]
+'RSM.tokens_roundtrip' depends on axioms: [propext, Classical.choice, Quot.sound]
+'RSM.bellman_exact' depends on axioms: [propext, Quot.sound]
+'RSM.raw_fallback' depends on axioms: [propext, Quot.sound]
+'RSM.no_collision_of_roundtrip' does not depend on any axioms
+'RSM.tokenized_fields_roundtrip' depends on axioms: [propext, Classical.choice, Quot.sound]
+'RSM.not_all_shorten' depends on axioms: [propext, Classical.choice, Quot.sound]
+PASS: exit 0; no proof holes reported.
