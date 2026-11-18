@@ -8,5 +8,7 @@ targets*.txt
 cracked*.txt
 *.state
 *.hmmap
+*.hmar
+__pycache__/
 maps/
 wordlists/combined.txt

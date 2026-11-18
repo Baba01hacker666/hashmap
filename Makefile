@@ -42,6 +42,17 @@ portable: $(SRCS)
 test: $(BIN)
 	@./tests/run.sh
 
+# Standalone storage experiment; neither Python nor Lean is needed by the C CLI.
+.PHONY: archive-test archive-proof archive-experiment
+archive-test:
+	cd research/map_archive && python3 -B -m unittest -v test_hmar
+
+archive-proof:
+	cd research/map_archive && lean -DwarningAsError=true Archive.lean
+
+archive-experiment:
+	cd research/map_archive && python3 -B experiment.py
+
 # wordlists: fetch the common password lists, dedupe and combine them
 #   make wordlist       top lists only (~4.6M candidates, seconds)
 #   make wordlist-full  everything incl. RockYou (~34M candidates, ~1 min)
