@@ -24,6 +24,7 @@ jobs:
           make archive-test
           python3 -B research/rsm1/bench.py --tests-only
           make -C research/rsm1 check
+          make evil-test
       - name: Portable static build
         run: make portable
       - name: Sanitizer build

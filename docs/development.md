@@ -29,6 +29,7 @@ docs/            the documentation you are reading
 | `make hashmap-archive` / `make install-archive` | build / install the optional Python 3.10+ map archive companion |
 | `make archive-test` | archive math, wire, round-trip, compatibility and CLI tests |
 | `make archive-compare` | compare complete HMARCH1 / HMARCH2 sizes on the same ordered inputs |
+| `make evil-test` / `make evil-compare` | EVIL nibble-codec research: strictness tests / measured ceiling vs the adaptive codecs |
 | `make install` | install to `$PREFIX/bin` (default `/usr/local`) |
 | `make install-hooks` | enable the co-author guard hooks for this clone |
 

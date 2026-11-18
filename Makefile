@@ -55,10 +55,16 @@ hashmap-archive: hmarchive.py research/__init__.py research/map_archive/hmar.py 
 	cp research/rsm1/rsm.py $(ARCHIVE_BUILD)/research/rsm1/
 	$(PYTHON) -m zipapp $(ARCHIVE_BUILD) -p '/usr/bin/env python3' -o $@
 
-.PHONY: archive-test archive-proof archive-experiment archive-compare install-archive
+.PHONY: archive-test archive-proof archive-experiment archive-compare install-archive evil-test evil-compare
 archive-test: hashmap-archive
 	cd research/map_archive && $(PYTHON) -B -m unittest -v test_hmar
 	$(PYTHON) -B -m unittest discover -s tests -p test_hmarchive.py -v
+
+evil-test:
+	$(PYTHON) -B -m unittest discover -s research/evil_codec -t . -p 'test_evil.py' -v
+
+evil-compare:
+	$(PYTHON) -B -m research.evil_codec.compare
 
 archive-compare:
 	$(PYTHON) -B -m research.map_archive.compare

@@ -94,6 +94,7 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | [docs/archive.md](docs/archive.md) | lossless map backup and restore, HMARCH1 compatibility, measured sizes |
 | [Map archive research](research/map_archive/README.md) | ordered map records: counting argument, Lean proof and ranked exceptions |
 | [RSM1 research](research/rsm1/README.md) | static byte maps, token coding, cache predictions, Python and C++ codecs |
+| [EVIL codec research](research/evil_codec/README.md) | fixed nibble codes for keys: measured ceiling vs the adaptive lanes |
 | [docs/lookup.md](docs/lookup.md) | the lookup workflow: password list → brute force |
 | [docs/wordlists.md](docs/wordlists.md) | the combined password list (SecLists + RockYou) |
 | [docs/bcrypt.md](docs/bcrypt.md) | bcrypt: verification, and the fixed salt hashmap |
