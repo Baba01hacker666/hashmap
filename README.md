@@ -78,6 +78,7 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | file | topic |
 |------|-------|
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
+| [Map archive research](research/map_archive/README.md) | lossless compression of ordered map records: counting argument, Lean proof, codec and size measurements |
 | [docs/lookup.md](docs/lookup.md) | the lookup workflow: password list → brute force |
 | [docs/wordlists.md](docs/wordlists.md) | the combined password list (SecLists + RockYou) |
 | [docs/bcrypt.md](docs/bcrypt.md) | bcrypt: verification, and the fixed salt hashmap |
