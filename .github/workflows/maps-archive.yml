@@ -1,0 +1,141 @@
+name: maps archive v2
+
+# Repack the published wordlist maps as HMARCH2 (v2) archives and publish the
+# new .hmar assets in the same `maps` release. The original .hmmap files stay
+# in place: the archives are lossless but must be unpacked before searching.
+#
+# Packing 34M rows is CPU-bound, so each map gets its own runner and the
+# groups are encoded in parallel (tools/pack-map-parallel.py).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    name: pack ${{ matrix.name }} as HMARCH2
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: md5
+            src: wordlist-map.hmmap
+            dst: wordlist-map.hmar
+          - name: sha256
+            src: wordlist-map-sha256.hmmap
+            dst: wordlist-map-sha256.hmar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the archive companion
+        run: make hashmap-archive
+
+      - name: Download the published map
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p maps
+          gh release download maps --repo "$GITHUB_REPOSITORY" \
+            --pattern '${{ matrix.src }}' --dir maps
+          ls -l maps
+
+      - name: Pack with HMARCH2 (parallel groups)
+        run: |
+          set -eu
+          python3 -B tools/pack-map-parallel.py \
+            "maps/${{ matrix.src }}" "maps/${{ matrix.dst }}" -j "$(nproc)"
+
+      - name: Verify the archive restores byte for byte
+        run: |
+          set -eu
+          ./hashmap-archive unpack "maps/${{ matrix.dst }}" maps/restored.hmmap
+          cmp "maps/${{ matrix.src }}" maps/restored.hmmap
+          rm maps/restored.hmmap
+
+      - name: Publish the v2 archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release upload maps "maps/${{ matrix.dst }}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Storage saved
+        run: |
+          set -eu
+          raw=$(stat -c %s "maps/${{ matrix.src }}")
+          arc=$(stat -c %s "maps/${{ matrix.dst }}")
+          saved=$((raw - arc))
+          pct=$(awk "BEGIN {printf \"%.1f\", 100*$saved/$raw}")
+          {
+            echo
+            echo '### Storage saved (${{ matrix.name }})'
+            echo
+            echo '| file | bytes |'
+            echo '|------|-------|'
+            echo "| plain ${{ matrix.src }} | $raw |"
+            echo "| HMARCH2 ${{ matrix.dst }} | $arc |"
+            echo "| saved | $saved |"
+            echo "| reduction | ${pct}% |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: publish the size report
+    needs: pack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rewrite the release notes with measured sizes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/maps" \
+            --jq '.assets[] | [.name, .size] | @tsv' > assets.tsv
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/maps" \
+            --jq '.body // ""' > old-body.md
+          # Drop a report from an earlier run so re-runs stay idempotent.
+          awk '/^## HMARCH2 \(v2\) archives/{exit} {print}' old-body.md > notes.md
+          python3 - <<'PY' >> notes.md
+          sizes = {}
+          with open("assets.tsv") as f:
+              for line in f:
+                  name, size = line.rstrip("\n").split("\t")
+                  sizes[name] = int(size)
+
+          def human(n):
+              step = 1024.0
+              for unit in ("B", "KB", "MB", "GB"):
+                  if n < step:
+                      return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+                  n /= step
+              return f"{n:.1f} TB"
+
+          print("\n## HMARCH2 (v2) archives\n")
+          print("The complete maps, repacked losslessly with "
+                "`hashmap-archive` (HMARCH2). Unpack before searching — an "
+                "archive is not a searchable map.\n")
+          print("```sh")
+          print("./hashmap-archive unpack wordlist-map.hmar wordlist-map.hmmap")
+          print("```\n")
+          print("| map | plain HMMAP | HMARCH2 (v2) | saved | reduction |")
+          print("|-----|------------:|-------------:|------:|----------:|")
+          total_raw = total_arc = 0
+          for plain, packed in (("wordlist-map.hmmap", "wordlist-map.hmar"),
+                                ("wordlist-map-sha256.hmmap", "wordlist-map-sha256.hmar")):
+              raw, arc = sizes[plain], sizes[packed]
+              total_raw += raw
+              total_arc += arc
+              print(f"| {plain} | {human(raw)} | {human(arc)} | "
+                    f"{human(raw - arc)} | {100 * (raw - arc) / raw:.1f}% |")
+          print(f"| **total** | **{human(total_raw)}** | **{human(total_arc)}** | "
+                f"**{human(total_raw - total_arc)}** | "
+                f"**{100 * (total_raw - total_arc) / total_raw:.1f}%** |")
+          PY
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+          gh release edit maps --repo "$GITHUB_REPOSITORY" \
+            --title "hashmap maps" --notes-file notes.md
