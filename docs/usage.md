@@ -111,6 +111,10 @@ hashmap map -o s.hmmap --wordlist combined.txt --algo sha256 --truncate 16
 Map files carry their algorithm and digest length in the header
 (`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.
 
+For storage **without** truncating anything, pack the finished file with the optional
+[`hashmap-archive` companion](archive.md). It restores the exact map bytes; the
+archive itself is not a searchable or resumable map.
+
 ### bcrypt
 
 A bcrypt hash (`$2b$12$...`) is recognised automatically. The salt comes

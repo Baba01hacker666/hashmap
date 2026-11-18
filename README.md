@@ -22,6 +22,19 @@ make test       # run the test suite
 
 Requires a C11 compiler (gcc or clang) and pthreads.
 
+## Lossless map storage
+
+The optional `hashmap-archive` companion combines RSM1's field compression with the ordered map archive. It packs **existing** HMMAP files without sorting rows, dropping duplicates, or truncating digests. The C build and map format are unchanged.
+
+```sh
+make hashmap-archive      # Python 3.10+, no third-party packages
+./hashmap-archive pack assets.hmmap assets.hmar
+./hashmap-archive unpack assets.hmar restored.hmmap
+cmp assets.hmmap restored.hmmap
+```
+
+On the CPython path/Git-ID fixture this took **129,774 bytes**, down from **161,449** with the previous archive. See [archive usage, comparisons and limits](docs/archive.md); reproduce with `make archive-compare`.
+
 ## Quick start
 
 ```sh
@@ -78,7 +91,9 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | file | topic |
 |------|-------|
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
-| [Map archive research](research/map_archive/README.md) | lossless compression of ordered map records: counting argument, Lean proof, codec and size measurements |
+| [docs/archive.md](docs/archive.md) | lossless map backup and restore, HMARCH1 compatibility, measured sizes |
+| [Map archive research](research/map_archive/README.md) | ordered map records: counting argument, Lean proof and ranked exceptions |
+| [RSM1 research](research/rsm1/README.md) | static byte maps, token coding, cache predictions, Python and C++ codecs |
 | [docs/lookup.md](docs/lookup.md) | the lookup workflow: password list → brute force |
 | [docs/wordlists.md](docs/wordlists.md) | the combined password list (SecLists + RockYou) |
 | [docs/bcrypt.md](docs/bcrypt.md) | bcrypt: verification, and the fixed salt hashmap |

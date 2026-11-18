@@ -155,6 +155,14 @@ def tests() -> dict[str, int]:
         assert read_lane(Reader(lane), len(fields)) == fields
         count["forced_field_modes"] += 1
 
+    # Intermediate BPE merges can be useful for training but unused in the
+    # emitted parse. The original wire reader needs no special refit mode.
+    compact = lane_candidates(fields, refit=True)
+    for mode in ("greedy", "tokens"):
+        assert len(compact[mode]) < len(cf[mode])
+        assert read_lane(Reader(compact[mode]), len(fields)) == fields
+        count["refitted_field_modes"] += 1
+
     m = {b"": b"", b"#?!\0": bytes(range(256)), b"0001": b"1.00", b"1": b"1",
          "é".encode(): "é".encode(), "e\u0301".encode(): "e\u0301".encode()}
     a = pack(m)
@@ -220,6 +228,8 @@ def main():
     p.add_argument("--tree", type=Path, help="use raw GitHub tree JSON instead of local extracted fixture")
     p.add_argument("--synthetic-only", action="store_true")
     p.add_argument("--tests-only", action="store_true")
+    p.add_argument("--compare-refit", action="store_true",
+                   help="measure final codebook refitting without replacing the reference CSV")
     args = p.parse_args()
     print("Checks passed:", json.dumps(tests(), sort_keys=True), flush=True)
     if args.tests_only:
@@ -229,6 +239,16 @@ def main():
             ("opaque-digest-keys", opaque_map(), None)]
     if not args.synthetic_only:
         sets.append(("cpython-paths", get_cpython(args.tree), None))
+    if args.compare_refit:
+        print("dataset                 original RSM1   with refit   saved bytes")
+        for name, m, cache in sets:
+            original = pack(m, cache)
+            refitted = pack(m, cache, refit=True)
+            if len(refitted) > len(original) or any(unpack(a) != (m, cache) for a in (original, refitted)):
+                raise AssertionError(f"{name}: refit size or round-trip regression")
+            print(f"{name:<22} {len(original):>14,} {len(refitted):>12,} {len(original)-len(refitted):>13,}",
+                  flush=True)
+        return
     rows = [row for name, m, c in sets for row in evaluate(name, m, c)]
     with args.output.open("w", newline="", encoding="utf-8") as out:
         w = csv.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")

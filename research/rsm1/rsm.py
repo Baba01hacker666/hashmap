@@ -302,7 +302,8 @@ def huff_header(lengths: dict[int, int], vocab: list[bytes]) -> bytes:
     return bytes(bitmap + lit) + uv(len(vocab)) + extra
 
 
-def lane_candidates(fields: list[bytes]) -> dict[str, bytes]:
+def lane_candidates(fields: list[bytes], *, refit: bool = False) -> dict[str, bytes]:
+    """RSM1 field encodings. Optionally refit codebooks after fixing the parse."""
     shp = shape([len(s) for s in fields])
     flat = b"".join(fields)
     raw = b"\0" + shp + flat
@@ -316,7 +317,7 @@ def lane_candidates(fields: list[bytes]) -> dict[str, bytes]:
             return
         head = b"\1" + shp + huff_header(lens, vocab)
         size = len(head) + (sum(lens[s] * count for s, count in hist.items()) + 7) // 8
-        if size >= len(raw):  # dominated by the same lane's raw form
+        if size >= len(out.get(label, raw)):  # keep the best complete lane, including its codebook
             return
         codes = canonical(lens)
         writer = BitWriter()
@@ -356,6 +357,16 @@ def lane_candidates(fields: list[bytes]) -> dict[str, bytes]:
         raise AssertionError("shortest path lost to greedy")
     for label, plans, hist in (("greedy", greedy, g_hist), ("tokens", optimal, o_hist)):
         keep(label, hist, lens, vocab, lambda: (sid for s in fields for sid in plans[s]))
+        if refit:
+            # Smoothing is useful when choosing a parse. Once it is fixed,
+            # unused expansions need neither dictionary entries nor codewords.
+            # Compact IDs in the original lexicographic token order.
+            used = [sid for sid in sorted(hist) if sid >= 256]
+            ids = {sid: sid for sid in hist if sid < 256}
+            ids.update((sid, i) for i, sid in enumerate(used, 256))
+            counts = Counter({ids[sid]: count for sid, count in hist.items()})
+            keep(label, counts, lengths_for(counts), [vocab[sid - 256] for sid in used],
+                 lambda: (ids[sid] for s in fields for sid in plans[s]))
     return out
 
 
@@ -402,9 +413,11 @@ def read_huff(inp: Reader, expected: int) -> bytes:
     return bytes(out)
 
 
-def read_lane(inp: Reader, n: int) -> list[bytes]:
+def read_lane(inp: Reader, n: int, *, max_field_bytes: int | None = None) -> list[bytes]:
     selector = inp.byte()
     lengths = unshape(inp, n)
+    if max_field_bytes is not None and any(size > max_field_bytes for size in lengths):
+        raise ValueError("field length exceeds limit")
     total = sum(lengths)
     if selector == 0:
         plain = inp.take(total)
@@ -479,13 +492,13 @@ def unelias(inp: Reader, n: int) -> list[bytes]:
     return out
 
 
-def key_candidates(keys: list[bytes]) -> dict[str, bytes]:
+def key_candidates(keys: list[bytes], *, refit: bool = False) -> dict[str, bytes]:
     out = {"direct/" + label: b"\0" + payload
-           for label, payload in lane_candidates(keys).items()}
+           for label, payload in lane_candidates(keys, refit=refit).items()}
     prefixes, suffixes = front_parts(keys)
     head = b"\1" + shape(prefixes)
     out.update({"front/" + label: head + payload
-                for label, payload in lane_candidates(suffixes).items()})
+                for label, payload in lane_candidates(suffixes, refit=refit).items()})
     ef = elias(keys)
     if ef is not None:
         out["elias-fano"] = ef
@@ -581,7 +594,8 @@ PROFILES = {
 
 
 class Candidates:
-    def __init__(self, mapping: Mapping[bytes, bytes], cache: Mapping[bytes, bytes] | None = None):
+    def __init__(self, mapping: Mapping[bytes, bytes], cache: Mapping[bytes, bytes] | None = None,
+                 *, refit: bool = False):
         if any(not isinstance(k, bytes) or not isinstance(v, bytes) for k, v in mapping.items()):
             raise TypeError("keys and values must be bytes")
         keys = sorted(mapping)
@@ -590,8 +604,8 @@ class Candidates:
             if cache.keys() != mapping.keys() or any(not isinstance(v, bytes) or len(v) != 32
                                                       for v in cache.values()):
                 raise ValueError("cache must supply one 32-byte value per key")
-        self.key = key_candidates(keys)
-        self.value = lane_candidates([mapping[k] for k in keys])
+        self.key = key_candidates(keys, refit=refit)
+        self.value = lane_candidates([mapping[k] for k in keys], refit=refit)
         self.cache = cache_candidates(keys, [cache[k] for k in keys]) if cache is not None else None
 
     def archive(self, profile: str = "rsm") -> tuple[bytes, dict[str, str | int]]:
@@ -620,8 +634,9 @@ class Candidates:
         return archive, info
 
 
-def pack(mapping: Mapping[bytes, bytes], cache: Mapping[bytes, bytes] | None = None) -> bytes:
-    return Candidates(mapping, cache).archive()[0]
+def pack(mapping: Mapping[bytes, bytes], cache: Mapping[bytes, bytes] | None = None,
+         *, refit: bool = False) -> bytes:
+    return Candidates(mapping, cache, refit=refit).archive()[0]
 
 
 def unpack(data: bytes, *, max_entries: int = DEFAULT_MAX_ENTRIES) -> tuple[dict[bytes, bytes], dict[bytes, bytes] | None]:
@@ -669,10 +684,13 @@ def main() -> None:
     cli.add_argument("output", type=Path)
     cli.add_argument("--max-entries", type=int, default=DEFAULT_MAX_ENTRIES,
                      help="decoder entry limit (default: %(default)s)")
+    cli.add_argument("--refit", action="store_true", help="try smaller final token codebooks when packing")
     args = cli.parse_args()
     if args.mode == "pack":
-        args.output.write_bytes(pack(*read_json(args.input)))
+        args.output.write_bytes(pack(*read_json(args.input), refit=args.refit))
     else:
+        if args.refit:
+            cli.error("--refit is an encoder option")
         write_json(args.output, *unpack(args.input.read_bytes(), max_entries=args.max_entries))
 
 

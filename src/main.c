@@ -55,6 +55,7 @@ void hm_usage_all(const char *prog)
         "  %s map -o digs.hmmap -c digits --max 4\n"
         "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
         "\n"
+        "lossless storage of finished maps: hashmap-archive (optional; docs/archive.md)\n"
         "more: docs/usage.md, docs/resume.md, docs/workflows.md\n",
         HM_VERSION, prog, prog, prog, prog, prog);
 }

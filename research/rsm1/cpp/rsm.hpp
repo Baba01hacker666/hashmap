@@ -25,7 +25,7 @@ struct Map {
 };
 
 // Profiles are for comparisons; they all write the same RSM1 wire format.
-enum class Profile { plain, structural, byte_huff, greedy, rsm };
+enum class Profile { plain, structural, byte_huff, greedy, rsm, refit };
 
 struct DecodeLimits {
     std::size_t max_entries = 1'000'000;

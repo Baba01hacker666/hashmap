@@ -196,12 +196,13 @@ rsm::Profile profile(View s) {
     if (s == "byte-huff") return rsm::Profile::byte_huff;
     if (s == "greedy") return rsm::Profile::greedy;
     if (s == "rsm") return rsm::Profile::rsm;
+    if (s == "refit") return rsm::Profile::refit;
     error("unknown profile");
 }
 
 void usage() {
     std::cerr << "Usage:\n"
-        "  rsm_cpp pack INPUT.json OUTPUT.rsm [--profile plain|structural|byte-huff|greedy|rsm]\n"
+        "  rsm_cpp pack INPUT.json OUTPUT.rsm [--profile plain|structural|byte-huff|greedy|rsm|refit]\n"
         "  rsm_cpp unpack INPUT.rsm OUTPUT.json [--max-entries N] [--max-bytes N]\n";
 }
 }  // namespace

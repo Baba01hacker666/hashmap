@@ -28,6 +28,21 @@ The real data comes from [the published Git tree](https://api.github.com/repos/p
 
 The vocabulary accounts for most of the tokenizer gain. Optimal parsing saved only 3, 3 and 98 bytes over greedy on these runs. Against the stronger DEFLATE baseline, RSM1 was 3.60% and 0.48% smaller on the two structured synthetic cases, and larger on the opaque and real cases. This does not establish a generally better compressor.
 
+## Optional final-codebook refit
+
+The smoothed codebook gives the parser a code for every candidate. **After** the parse is fixed, it need not transmit a code for literals or intermediate byte-pair merges the parse never emits. `--refit` drops those entries, renumbers surviving tokens in lexical order, and fits Huffman lengths to the actual counts. It keeps the old encoding unless the *complete* refitted lane wins. This is an encoder choice, not a new wire version or a claim of globally optimal tokenization. Defaults and the original five profiles are unchanged.
+
+| Same logical map | Original RSM1 | Refit | Additional bytes saved |
+|---|---:|---:|---:|
+| Structured text | 349,196 | 348,194 | 1,002 |
+| Mixed cache | 726,110 | 726,007 | 103 |
+| Opaque digest keys and values | 4,079,637 | 4,079,637 | 0 |
+| CPython paths | 130,748 | 130,703 | 45 |
+
+Run `python3 bench.py --compare-refit` to reproduce without changing the reference CSV. Use `python3 rsm.py pack input.json out.rsm --refit` or `build/rsm_cpp pack input.json out.rsm --profile refit`; unpack as before. The Python and C++ encoders matched on all four refitted archives as well as the 20 original-profile cases.
+
+For **ordered HMMAP files** use [the archive companion](../../docs/archive.md), not this logical-map envelope: it uses refitted field lanes without sorting the rows and can preserve multiple values for one key.
+
 ## Construction and proof
 
 **1. Use sorted rank to keep the lanes aligned.** Sort unique keys once; row *i* in every other lane belongs to sorted key *i*. For string keys, one candidate stores `(common-prefix length p, suffix of the current key starting at p)`. The decoder takes `previous[:p] + suffix`, which equals the original key by the definition of `p`. Each next row therefore sees the same previous key as the encoder. A key and its value are never deduplicated just because other records share their contents.

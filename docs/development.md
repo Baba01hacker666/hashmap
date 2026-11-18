@@ -25,7 +25,10 @@ docs/            the documentation you are reading
 | `make` | optimized build (`-O3 -march=native -flto`) |
 | `make portable` | static binary, no `-march=native` (release artifacts) |
 | `make debug` | ASan + UBSan build |
-| `make test` | run the test suite |
+| `make test` | run the C test suite |
+| `make hashmap-archive` / `make install-archive` | build / install the optional Python 3.10+ map archive companion |
+| `make archive-test` | archive math, wire, round-trip, compatibility and CLI tests |
+| `make archive-compare` | compare complete HMARCH1 / HMARCH2 sizes on the same ordered inputs |
 | `make install` | install to `$PREFIX/bin` (default `/usr/local`) |
 | `make install-hooks` | enable the co-author guard hooks for this clone |
 

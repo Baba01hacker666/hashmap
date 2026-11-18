@@ -11,7 +11,8 @@ namespace {
 using rsm::Bytes;
 using rsm::Map;
 using rsm::Profile;
-constexpr std::array profiles{Profile::plain, Profile::structural, Profile::byte_huff, Profile::greedy, Profile::rsm};
+constexpr std::array profiles{Profile::plain, Profile::structural, Profile::byte_huff,
+                              Profile::greedy, Profile::rsm, Profile::refit};
 
 void require(bool good, const char* message) {
     if (!good) throw std::runtime_error(message);

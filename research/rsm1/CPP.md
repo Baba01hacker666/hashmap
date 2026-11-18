@@ -44,6 +44,10 @@ make sanitize      # repeats native checks with AddressSanitizer and UBSan (Linu
 
 The JSON input is the same hex interchange schema as the Python CLI: `{"cache": false, "entries": [["key_hex", "value_hex"], …]}`. With `cache: true`, put the 32-byte cache value in a third hex string in every row. JSON whitespace, hex case and insertion order are not part of the logical map. The recovered keys and values are byte-exact. The archive does not support in-place updates or lookups without decoding. Use trusted archives; the format has no corruption checksum. The C++ decoder accepts `--max-entries` and `--max-bytes` to set logical decode budgets (defaults: 1,000,000 entries and 1 GiB of key/value/cache payload).
 
+### Optional refitted codebook
+
+`./build/rsm_cpp pack example.json packed.rsm --profile refit` (library: `Profile::refit`) tries fitting a smaller codebook to the final token sequence. The format and default `rsm` output are unchanged. See the [four before/after sizes](README.md#optional-final-codebook-refit). `bench_cpp.py` now checks 24 exact profile matches including refit; the checked-in timing CSV above is from the original five-profile run.
+
 ## Use as a library
 
 ```cpp
