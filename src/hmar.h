@@ -39,4 +39,21 @@ int hm_hmar_next(hm_hmar_t *h, int *nrows);
 const uint8_t *hm_hmar_key(const hm_hmar_t *h, int row, size_t *len);
 const uint8_t *hm_hmar_digest(const hm_hmar_t *h, int row);
 
+/* Visits every row of a group, from whichever worker decoded it. */
+typedef void (*hm_hmar_row_fn)(void *ctx, const uint8_t *digest,
+                               const uint8_t *key, size_t keylen);
+
+#define HM_HMAR_MAX_THREADS 64
+
+/* Scan every group with up to `threads` decoders and call `fn` for each row.
+ * The rows of a group are delivered in order by one worker; groups may be
+ * visited in any order. With `verify` set the archive checksum is checked
+ * as well (the rows are re-hashed in original order while the workers run).
+ *
+ * Returns 0 on success, -1 on error and 1 when the archive cannot be split
+ * (HMARCH1 legacy groups), in which case the caller should fall back to
+ * hm_hmar_open/hm_hmar_next. */
+int hm_hmar_scan(const char *path, int threads, int verify,
+                 hm_hmar_row_fn fn, void *ctx);
+
 #endif /* HM_HMAR_H */

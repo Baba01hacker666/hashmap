@@ -499,6 +499,18 @@ if [ -x "$ARCH" ]; then
         *) bad "archive: search decodes .hmar directly (got=$out)" ;;
     esac
 
+    # the parallel decoder and the checksum-free fast path agree
+    out=$("$BIN" search -t 4 -H "$(md5_of 42)" "$TMP/arch.hmar" 2>/dev/null)
+    case "$out" in
+        *":42") ok "archive: search decodes .hmar with worker threads" ;;
+        *) bad "archive: search decodes .hmar with worker threads (got=$out)" ;;
+    esac
+    out=$("$BIN" search --no-verify -H "$(md5_of 42)" "$TMP/arch.hmar" 2>/dev/null)
+    case "$out" in
+        *":42") ok "archive: --no-verify still finds the row" ;;
+        *) bad "archive: --no-verify still finds the row (got=$out)" ;;
+    esac
+
     # HMARCH1 archives are readable too
     if "$ARCH" pack --legacy "$TMP/arch.hmmap" "$TMP/legacy.hmar" 2>/dev/null; then
         out=$("$BIN" search -H "$(md5_of 42)" "$TMP/legacy.hmar" 2>/dev/null)

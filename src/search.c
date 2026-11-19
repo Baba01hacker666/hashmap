@@ -8,6 +8,8 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,7 +31,7 @@ typedef struct {
     char hex[65];
     char salt[48]; /* the bcrypt setting of this hash */
     int width;     /* stored digest bytes for this hash */
-    int found;
+    _Atomic int found;
 } want_t;
 
 typedef struct {
@@ -254,17 +256,88 @@ static int scan_plain(const char *path, want_t *wants, int nwants, FILE *outf)
     return 0;
 }
 
-/* scan an HMARCH1/HMARCH2 archive without restoring it first */
-static int scan_archive(const char *path, want_t *wants, int nwants, FILE *outf)
+/* per-file scan state shared by the archive workers */
+typedef struct {
+    want_t *wants;
+    int nwants;
+    FILE *outf;
+    int dlen;
+    pthread_mutex_t out_mtx;
+} arc_ctx_t;
+
+static void arc_row(void *ctx, const uint8_t *dig, const uint8_t *key,
+                    size_t klen)
+{
+    arc_ctx_t *c = ctx;
+    char plain[256];
+
+    for (int i = 0; i < c->nwants; i++) {
+        if (c->wants[i].found)
+            continue;
+        if (c->wants[i].width < c->dlen)
+            continue;
+        if (memcmp(c->wants[i].bytes, dig, (size_t)c->dlen) != 0)
+            continue;
+        if (klen >= sizeof(plain))
+            klen = sizeof(plain) - 1;
+        memcpy(plain, key, klen);
+        plain[klen] = '\0';
+        pthread_mutex_lock(&c->out_mtx);
+        if (c->wants[i].found == 0) {
+            c->wants[i].found = 1;
+            printf("%s:%s\n", c->wants[i].hex, plain);
+            if (c->outf != NULL) {
+                fprintf(c->outf, "%s:%s\n", c->wants[i].hex, plain);
+                fflush(c->outf);
+            }
+        }
+        pthread_mutex_unlock(&c->out_mtx);
+        break;
+    }
+}
+
+/* single-threaded walk, also used for HMARCH1 archives that cannot be split */
+static int scan_archive_serial(const char *path, arc_ctx_t *c)
 {
     hm_hmar_t *ar = NULL;
-    int dlen;
     int rows;
     int rc = 0;
 
     if (hm_hmar_open(path, &ar) < 0)
         return -1;
-    dlen = hm_hmar_dlen(ar);
+    for (;;) {
+        int got = hm_hmar_next(ar, &rows);
+
+        if (got < 0) {
+            rc = -1;
+            break;
+        }
+        if (got == 0)
+            break;
+        for (int r = 0; r < rows; r++) {
+            size_t klen = 0;
+            const uint8_t *key = hm_hmar_key(ar, r, &klen);
+            const uint8_t *dig = hm_hmar_digest(ar, r);
+
+            if (dig != NULL)
+                arc_row(c, dig, key, klen);
+        }
+    }
+    hm_hmar_close(ar);
+    return rc;
+}
+
+/* scan an HMARCH1/HMARCH2 archive without restoring it first */
+static int scan_archive(const char *path, want_t *wants, int nwants, FILE *outf,
+                        int threads, int verify)
+{
+    hm_hmar_t *ar = NULL;
+    arc_ctx_t c;
+    int rc;
+
+    if (hm_hmar_open(path, &ar) < 0)
+        return -1;
+    c.dlen = hm_hmar_dlen(ar);
     if (hm_hmar_salt(ar)[0] != '\0') {
         /* a bcrypt map: the hashes must use the same salt */
         for (int i = 0; i < nwants; i++) {
@@ -280,50 +353,22 @@ static int scan_archive(const char *path, want_t *wants, int nwants, FILE *outf)
             }
         }
     }
-    for (;;) {
-        int got = hm_hmar_next(ar, &rows);
-
-        if (got < 0) {
-            rc = -1;
-            break;
-        }
-        if (got == 0)
-            break;
-        for (int r = 0; r < rows; r++) {
-            size_t klen = 0;
-            const uint8_t *key = hm_hmar_key(ar, r, &klen);
-            const uint8_t *dig = hm_hmar_digest(ar, r);
-            char plain[256];
-
-            if (dig == NULL)
-                continue;
-            for (int i = 0; i < nwants; i++) {
-                if (wants[i].found)
-                    continue;
-                if (wants[i].width < dlen)
-                    continue;
-                if (memcmp(wants[i].bytes, dig, (size_t)dlen) != 0)
-                    continue;
-                if (klen >= sizeof(plain))
-                    klen = sizeof(plain) - 1;
-                memcpy(plain, key, klen);
-                plain[klen] = '\0';
-                printf("%s:%s\n", wants[i].hex, plain);
-                if (outf != NULL) {
-                    fprintf(outf, "%s:%s\n", wants[i].hex, plain);
-                    fflush(outf);
-                }
-                wants[i].found = 1;
-                break;
-            }
-        }
-    }
     hm_hmar_close(ar);
+
+    c.wants = wants;
+    c.nwants = nwants;
+    c.outf = outf;
+    pthread_mutex_init(&c.out_mtx, NULL);
+    rc = hm_hmar_scan(path, threads, verify, arc_row, &c);
+    pthread_mutex_destroy(&c.out_mtx);
+    if (rc == 1) /* not splittable */
+        rc = scan_archive_serial(path, &c);
     return rc;
 }
 
 /* dispatch on the file magic: plain map or lossless archive */
-static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
+static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf,
+                    int threads, int verify)
 {
     FILE *f = fopen(path, "rb");
     char magic[8];
@@ -338,7 +383,7 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
     if (got == sizeof(magic) &&
         (memcmp(magic, "HMARCH1\n", 8) == 0 ||
          memcmp(magic, "HMARCH2\n", 8) == 0))
-        return scan_archive(path, wants, nwants, outf);
+        return scan_archive(path, wants, nwants, outf, threads, verify);
     return scan_plain(path, wants, nwants, outf);
 }
 
@@ -348,6 +393,8 @@ int hm_mode_search(int argc, char **argv)
         { "hash", 1, 'H' },
         { "hash-file", 1, 'F' },
         { "out", 1, 'o' },
+        { "threads", 1, 't' },
+        { "no-verify", 0, 1 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -356,6 +403,8 @@ int hm_mode_search(int argc, char **argv)
     const char *outpath = NULL;
     FILE *outf = NULL;
     int nwants = 0;
+    int threads = (int)hm_cpu_count();
+    int verify = 1;
     int opt;
     int rc = 2;
 
@@ -370,7 +419,7 @@ int hm_mode_search(int argc, char **argv)
     }
 
     hm_getopt_reset();
-    while ((opt = hm_getopt_long(argc, argv, "H:F:o:h", lopts)) != -1) {
+    while ((opt = hm_getopt_long(argc, argv, "H:F:o:t:h", lopts)) != -1) {
         switch (opt) {
         case 'H': {
             hm_target_t tg;
@@ -428,6 +477,22 @@ int hm_mode_search(int argc, char **argv)
         case 'o':
             outpath = hm_optarg;
             break;
+        case 't': {
+            char *end = NULL;
+            long v = strtol(hm_optarg, &end, 10);
+
+            if (end == NULL || *end != '\0' || v < 1 ||
+                v > HM_HMAR_MAX_THREADS) {
+                fprintf(stderr, "[-] bad --threads value (1-%d)\n",
+                        HM_HMAR_MAX_THREADS);
+                goto out;
+            }
+            threads = (int)v;
+            break;
+        }
+        case 1:
+            verify = 0;
+            break;
         case 'h':
             hm_usage_search();
             free(wants);
@@ -477,7 +542,7 @@ int hm_mode_search(int argc, char **argv)
     }
 
     for (int i = 0; i < maps.n; i++) {
-        if (scan_map(maps.v[i], wants, nwants, outf) < 0) {
+        if (scan_map(maps.v[i], wants, nwants, outf, threads, verify) < 0) {
             rc = 1;
             goto out;
         }

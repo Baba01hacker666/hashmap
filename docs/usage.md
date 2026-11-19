@@ -193,6 +193,14 @@ found, so a directory of shards is cheap when the answer is in an early one.
 `.hmmap` and `.hmar` files can be mixed freely: an archive is decoded on the
 fly, and its SHA-256 is checked while streaming.
 
+Archives are decoded by several workers by default; `-t/--threads` sets the
+worker count and `--no-verify` drops the checksum pass for the fastest scan:
+
+```sh
+hashmap search -t 8 -H <md5hex> wordlist-map.hmar
+hashmap search -t 8 --no-verify -H <md5hex> wordlist-map-sha256.hmar
+```
+
 ## wordlist
 
 ```sh

@@ -27,6 +27,21 @@ streamed SHA-256 is verified; a damaged, truncated or unsupported archive is
 an error, never a silent empty result. `unpack` is still the way to get a
 byte-exact file for tools that need one.
 
+Archives are decoded by several workers at once. `-t/--threads` controls how
+many (default: all cores) and `--no-verify` skips the checksum pass, which is
+the fastest mode because the SHA-256 stream is the only part that cannot run
+in parallel:
+
+```sh
+hashmap search -t 8 -H <hex> wordlist-map.hmar           # parallel, checked
+hashmap search -t 8 --no-verify -H <hex> wordlist-map.hmar  # parallel, fastest
+```
+
+Groups are handed to the workers in an interleaved order and re-hashed in
+original order through a small ring buffer, so the checksum still covers the
+same bytes in the same sequence. HMARCH1 archives fall back to a single
+walker automatically.
+
 The reader handles predicted digests, literal digest lanes, subblock lanes
 and digest tables. An archive whose encoder chose **ranked digest
 exceptions** is rejected with a message that asks for an unpack: that lane

@@ -168,13 +168,17 @@ void hm_usage_search(void)
         "\n"
         "  -H, --hash <md5hex>        hash to look up (repeatable)\n"
         "  -F, --hash-file <file>     file of hashes, one per line\n"
+        "  -o, --out <file>           append findings to a file\n"
+        "  -t, --threads <n>          archive decoders (default: all cores)\n"
+        "      --no-verify            skip the archive checksum while searching\n"
         "  -h, --help                 this help\n"
         "\n"
         "examples:\n"
         "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
         "  %s search -H <md5hex> wordlist-map.hmar\n"
+        "  %s search -H <md5hex> -t 8 wordlist-map-sha256.hmar\n"
         "  %s search -F targets.txt /path/to/maps/\n",
-        hm_prog, hm_prog, hm_prog, hm_prog, hm_prog);
+        hm_prog, hm_prog, hm_prog, hm_prog, hm_prog, hm_prog);
 }
 
 void hm_usage_wordlist(void)

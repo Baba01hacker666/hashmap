@@ -11,6 +11,7 @@
 #include "compat.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,16 @@
 
 #define HM_HMAR_EXTENDED 0x7f
 #define HM_HMAR_FRONT 0x80
+
+/* large-file positioning: fseeko/ftello on POSIX, the 64-bit CRT calls on
+ * Windows (where a plain long is only 32 bits) */
+#if defined(_WIN32)
+#define hm_fseek _fseeki64
+#define hm_ftell _ftelli64
+#else
+#define hm_fseek fseeko
+#define hm_ftell ftello
+#endif
 
 struct hm_hmar {
     FILE *f;
@@ -1190,7 +1201,9 @@ const char *hm_hmar_salt(const hm_hmar_t *h)
     return h->salt;
 }
 
-int hm_hmar_next(hm_hmar_t *h, int *nrows)
+/* decode one group from the current position. Returns 1 for a group, 0 at
+ * the checksum tag and -1 on error. The checksum stays untouched. */
+static int decode_group(hm_hmar_t *h, int *nrows)
 {
     unsigned tag;
     int c = getc(h->f);
@@ -1198,19 +1211,8 @@ int hm_hmar_next(hm_hmar_t *h, int *nrows)
     if (c == EOF)
         return bad(h, "truncated archive (no checksum)");
     tag = (unsigned)c;
-    if (tag == 0) {
-        uint8_t want[32];
-        uint8_t got[32];
-
-        if (read_file(h, want, sizeof(want)) != 0)
-            return -1;
-        hm_sha256_final(&h->sum, got);
-        if (memcmp(want, got, sizeof(want)) != 0)
-            return bad(h, "checksum mismatch (the archive is damaged)");
-        if (getc(h->f) != EOF)
-            return bad(h, "trailing data after the archive checksum");
+    if (tag == 0)
         return 0;
-    }
     if (tag == HM_HMAR_EXTENDED) {
         if (!h->v2)
             return bad(h, "extended group in an HMARCH1 archive");
@@ -1219,6 +1221,29 @@ int hm_hmar_next(hm_hmar_t *h, int *nrows)
     } else {
         if (legacy_block(h, tag) != 0)
             return -1;
+    }
+    *nrows = h->nrows;
+    return 1;
+}
+
+int hm_hmar_next(hm_hmar_t *h, int *nrows)
+{
+    int got = decode_group(h, nrows);
+
+    if (got < 0)
+        return -1;
+    if (got == 0) {
+        uint8_t want[32];
+        uint8_t sum[32];
+
+        if (read_file(h, want, sizeof(want)) != 0)
+            return -1;
+        hm_sha256_final(&h->sum, sum);
+        if (memcmp(want, sum, sizeof(want)) != 0)
+            return bad(h, "checksum mismatch (the archive is damaged)");
+        if (getc(h->f) != EOF)
+            return bad(h, "trailing data after the archive checksum");
+        return 0;
     }
     for (int i = 0; i < h->nrows; i++) {
         size_t len;
@@ -1229,7 +1254,6 @@ int hm_hmar_next(hm_hmar_t *h, int *nrows)
         hm_sha256_update(&h->sum, &lb, 1);
         hm_sha256_update(&h->sum, key, len);
     }
-    *nrows = h->nrows;
     return 1;
 }
 
@@ -1241,4 +1265,410 @@ const uint8_t *hm_hmar_key(const hm_hmar_t *h, int row, size_t *len)
 const uint8_t *hm_hmar_digest(const hm_hmar_t *h, int row)
 {
     return h->dig[row];
+}
+
+/* ------------------------------------------------------------------ */
+/* parallel scanning                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Group start offsets of a splittable (HMARCH2) archive. */
+typedef struct {
+    long long *off;
+    int n;
+    int cap;
+    long long sum; /* offset of the trailer tag */
+} index_t;
+
+static int skip_bytes(FILE *f, size_t n)
+{
+    return hm_fseek(f, (long long)n, SEEK_CUR) == 0 ? 0 : -1;
+}
+
+/* Skip one digest lane while indexing. Only sizes are parsed here, so the
+ * pass is cheap. Returns 1 when the lane cannot be skipped (ranked
+ * exceptions), which disables splitting. */
+static int skip_digest_lane(const hm_hmar_t *h, int n)
+{
+    size_t d = (size_t)h->dlen;
+    int c = getc(h->f);
+
+    if (c == EOF)
+        return -1;
+    if (c == DIG_PREDICTED)
+        return 0;
+    if (c == DIG_LITERAL)
+        return skip_bytes(h->f, (size_t)n * d);
+    if (c == DIG_TABLE) {
+        unsigned char cb[2];
+        int count;
+        unsigned bits;
+        size_t mask_bytes;
+        size_t index_bytes;
+        int bitmap;
+
+        if (fread(cb, 1, 2, h->f) != 2)
+            return -1;
+        count = ((int)cb[0] << 8) | (int)cb[1];
+        if (count < 1 || count > n)
+            return -1;
+        index_layout(n, count, &bits, &mask_bytes, &index_bytes, &bitmap);
+        if (skip_bytes(h->f, (size_t)count * d) != 0)
+            return -1;
+        if (bitmap && skip_bytes(h->f, mask_bytes) != 0)
+            return -1;
+        return skip_bytes(h->f, index_bytes);
+    }
+    if (c == DIG_SUBBLOCKS) {
+        int at = 0;
+
+        while (at < n) {
+            int nb = n - at < HM_HMAR_BLOCK ? n - at : HM_HMAR_BLOCK;
+            int k = getc(h->f);
+
+            if (k == EOF)
+                return -1;
+            if (k == DIG_LITERAL) {
+                if (skip_bytes(h->f, (size_t)nb * d) != 0)
+                    return -1;
+            } else if (k != 0) {
+                return 1;
+            }
+            at += nb;
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int index_add(index_t *ix, long long off)
+{
+    if (ix->n >= ix->cap) {
+        int ncap = (ix->cap == 0) ? 1024 : ix->cap * 2;
+        long long *tmp = realloc(ix->off, (size_t)ncap * sizeof(*tmp));
+
+        if (tmp == NULL)
+            return -1;
+        ix->off = tmp;
+        ix->cap = ncap;
+    }
+    ix->off[ix->n++] = off;
+    return 0;
+}
+
+/* Build the group offset table. Returns 0 when every group can be reached
+ * by seek, 1 when the archive has to be read sequentially. */
+static int build_index(hm_hmar_t *h, index_t *ix)
+{
+    memset(ix, 0, sizeof(*ix));
+    if (!h->v2)
+        return 1;
+    for (;;) {
+        long long off = hm_ftell(h->f);
+        int c;
+
+        if (off < 0)
+            return 1;
+        c = getc(h->f);
+        if (c == EOF)
+            return 1;
+        if (c == 0) {
+            ix->sum = off;
+            return (ix->n > 0) ? 0 : 1;
+        }
+        if ((unsigned)c != HM_HMAR_EXTENDED)
+            return 1;
+        {
+            unsigned char nb[2];
+            unsigned char sb[4];
+            uint32_t size;
+            int n;
+            size_t maxsize;
+
+            if (fread(nb, 1, 2, h->f) != 2)
+                return 1;
+            if (fread(sb, 1, 4, h->f) != 4)
+                return 1;
+            n = ((int)nb[0] << 8) | (int)nb[1];
+            size = ((uint32_t)sb[0] << 24) | ((uint32_t)sb[1] << 16) |
+                   ((uint32_t)sb[2] << 8) | (uint32_t)sb[3];
+            if (n < 1 || n > HM_HMAR_GROUP)
+                return 1;
+            maxsize = 4u + (size_t)(2 + HM_HMAR_KEY_STRIDE - 1) * (size_t)n;
+            if (size < 1 || (size_t)size > maxsize)
+                return 1;
+            if (skip_bytes(h->f, (size_t)size) != 0)
+                return 1;
+            if (skip_digest_lane(h, n) != 0)
+                return 1;
+            if (index_add(ix, off) != 0)
+                return 1;
+        }
+    }
+}
+
+
+/* Rows are re-hashed in original order for the checksum while the workers
+ * keep decoding. Each group is serialized into a slot of a small ring, so a
+ * worker never has to wait for the hasher before decoding the next group. */
+typedef struct {
+    pthread_mutex_t mtx;
+    pthread_cond_t cv;
+    uint8_t *buf;
+    size_t *len;
+    int *state; /* group id + 1 in the slot, 0 when free */
+    size_t slot_size;
+    int cap;
+    int total;
+    long long next; /* oldest group the hasher has not consumed yet */
+    int err;
+    hm_sha256_ctx sum;
+} relay_t;
+
+typedef struct {
+    const char *path;
+    const index_t *ix;
+    relay_t *relay;
+    hm_hmar_row_fn fn;
+    void *ctx;
+    int verify;
+    int lo;
+    int stride;
+    int total;
+    int failed;
+} worker_t;
+
+static void relay_fail(relay_t *r)
+{
+    pthread_mutex_lock(&r->mtx);
+    r->err = 1;
+    pthread_cond_broadcast(&r->cv);
+    pthread_mutex_unlock(&r->mtx);
+}
+
+/* Serialize one decoded group (digest, length, key) and hand it to the
+ * hasher. Blocks only while the ring slot is still waiting to be hashed. */
+static int relay_push(relay_t *r, int group, const hm_hmar_t *h)
+{
+    size_t need = 0;
+    size_t at = 0;
+    int slot = group % r->cap;
+
+    for (int i = 0; i < h->nrows; i++) {
+        size_t klen = 0;
+
+        get_key(h, i, &klen);
+        need += (size_t)h->dlen + 1u + klen;
+    }
+    if (need > r->slot_size) {
+        fprintf(stderr, "[-] internal error: group does not fit the replay "
+                        "buffer\n");
+        relay_fail(r);
+        return -1;
+    }
+    pthread_mutex_lock(&r->mtx);
+    while (r->err == 0 &&
+           ((long long)group >= r->next + (long long)r->cap ||
+            r->state[slot] != 0))
+        pthread_cond_wait(&r->cv, &r->mtx);
+    if (r->err != 0) {
+        pthread_mutex_unlock(&r->mtx);
+        return -1;
+    }
+    for (int i = 0; i < h->nrows; i++) {
+        size_t klen = 0;
+        const uint8_t *key = get_key(h, i, &klen);
+        uint8_t lb = (uint8_t)klen;
+
+        memcpy(r->buf + (size_t)slot * r->slot_size + at, h->dig[i],
+               (size_t)h->dlen);
+        at += (size_t)h->dlen;
+        r->buf[(size_t)slot * r->slot_size + at] = lb;
+        at += 1;
+        memcpy(r->buf + (size_t)slot * r->slot_size + at, key, klen);
+        at += klen;
+    }
+    r->len[slot] = need;
+    r->state[slot] = group + 1;
+    pthread_cond_broadcast(&r->cv);
+    pthread_mutex_unlock(&r->mtx);
+    return 0;
+}
+
+/* Hash the queued groups in archive order. Runs on the calling thread while
+ * the workers decode. */
+static int relay_drain(relay_t *r)
+{
+    for (int g = 0; g < r->total; g++) {
+        int slot = g % r->cap;
+
+        pthread_mutex_lock(&r->mtx);
+        while (r->err == 0 && r->state[slot] != g + 1)
+            pthread_cond_wait(&r->cv, &r->mtx);
+        if (r->err != 0) {
+            pthread_mutex_unlock(&r->mtx);
+            return -1;
+        }
+        hm_sha256_update(&r->sum, r->buf + (size_t)slot * r->slot_size,
+                         r->len[slot]);
+        r->state[slot] = 0;
+        r->next = (long long)g + 1;
+        pthread_cond_broadcast(&r->cv);
+        pthread_mutex_unlock(&r->mtx);
+    }
+    return 0;
+}
+
+static void *scan_worker(void *arg)
+{
+    worker_t *w = arg;
+    hm_hmar_t *h = NULL;
+
+    if (hm_hmar_open(w->path, &h) < 0) {
+        w->failed = 1;
+        relay_fail(w->relay);
+        return NULL;
+    }
+    for (int g = w->lo; g < w->total; g += w->stride) {
+        int rows = 0;
+
+        if (hm_fseek(h->f, w->ix->off[g], SEEK_SET) != 0 ||
+            decode_group(h, &rows) != 1) {
+            w->failed = 1;
+            relay_fail(w->relay);
+            break;
+        }
+        for (int r = 0; r < rows; r++) {
+            size_t klen = 0;
+            const uint8_t *key = get_key(h, r, &klen);
+
+            w->fn(w->ctx, h->dig[r], key, klen);
+        }
+        if (w->verify && relay_push(w->relay, g, h) != 0) {
+            w->failed = 1;
+            break;
+        }
+    }
+    hm_hmar_close(h);
+    return NULL;
+}
+
+int hm_hmar_scan(const char *path, int threads, int verify,
+                 hm_hmar_row_fn fn, void *ctx)
+{
+    hm_hmar_t *probe = NULL;
+    index_t ix;
+    relay_t relay;
+    worker_t *w = NULL;
+    pthread_t *tids = NULL;
+    uint8_t want[32];
+    uint8_t sum[32];
+    int nt;
+    int started = 0;
+    int failed = 0;
+    int rc = 1;
+
+    if (threads < 1)
+        threads = 1;
+    if (threads > HM_HMAR_MAX_THREADS)
+        threads = HM_HMAR_MAX_THREADS;
+    if (hm_hmar_open(path, &probe) < 0)
+        return -1;
+    if (build_index(probe, &ix) != 0)
+        goto out;
+    /* the trailer has to be the last thing in the file */
+    if (hm_fseek(probe->f, ix.sum + 33, SEEK_SET) != 0)
+        goto out;
+    if (getc(probe->f) != EOF)
+        goto out;
+
+    memset(&relay, 0, sizeof(relay));
+    pthread_mutex_init(&relay.mtx, NULL);
+    pthread_cond_init(&relay.cv, NULL);
+    relay.total = ix.n;
+    if (verify) {
+        relay.cap = (ix.n < 64) ? ix.n : 64;
+        relay.slot_size = (size_t)HM_HMAR_GROUP *
+                          ((size_t)probe->dlen + 1u +
+                           (size_t)HM_HMAR_KEY_STRIDE - 1u);
+        relay.buf = malloc((size_t)relay.cap * relay.slot_size);
+        relay.len = calloc((size_t)relay.cap, sizeof(*relay.len));
+        relay.state = calloc((size_t)relay.cap, sizeof(*relay.state));
+        if (relay.buf == NULL || relay.len == NULL || relay.state == NULL) {
+            fprintf(stderr, "[-] out of memory\n");
+            free(relay.buf);
+            free(relay.len);
+            free(relay.state);
+            rc = -1;
+            goto relay_out;
+        }
+        hm_sha256_init(&relay.sum);
+        hm_sha256_update(&relay.sum, probe->hdr, probe->hdrlen);
+    }
+
+    nt = (threads < ix.n) ? threads : ix.n;
+    w = calloc((size_t)nt, sizeof(*w));
+    tids = calloc((size_t)nt, sizeof(*tids));
+    if (w == NULL || tids == NULL) {
+        fprintf(stderr, "[-] out of memory\n");
+        rc = -1;
+        goto relay_out;
+    }
+    for (int t = 0; t < nt; t++) {
+        w[t].path = path;
+        w[t].ix = &ix;
+        w[t].relay = &relay;
+        w[t].fn = fn;
+        w[t].ctx = ctx;
+        w[t].verify = verify;
+        /* strided groups keep every worker feeding the checksum ring */
+        w[t].lo = t;
+        w[t].stride = nt;
+        w[t].total = ix.n;
+    }
+    for (int t = 0; t < nt; t++) {
+        if (pthread_create(&tids[t], NULL, scan_worker, &w[t]) != 0) {
+            fprintf(stderr, "[-] pthread_create failed\n");
+            relay_fail(&relay);
+            break;
+        }
+        started++;
+    }
+    if (verify && relay_drain(&relay) != 0)
+        rc = -1;
+    for (int t = 0; t < started; t++)
+        pthread_join(tids[t], NULL);
+    for (int t = 0; t < nt; t++)
+        if (w[t].failed)
+            failed = 1;
+    if (failed || started != nt)
+        rc = -1;
+    else
+        rc = 0;
+    if (rc == 0 && verify) {
+        hm_sha256_final(&relay.sum, sum);
+        if (hm_fseek(probe->f, ix.sum + 1, SEEK_SET) != 0 ||
+            fread(want, 1, sizeof(want), probe->f) != sizeof(want)) {
+            rc = -1;
+        } else if (memcmp(want, sum, sizeof(want)) != 0) {
+            fprintf(stderr,
+                    "[-] %s: checksum mismatch (the archive is damaged)\n",
+                    path);
+            rc = -1;
+        }
+    }
+
+relay_out:
+    pthread_mutex_destroy(&relay.mtx);
+    pthread_cond_destroy(&relay.cv);
+    if (verify) {
+        free(relay.buf);
+        free(relay.len);
+        free(relay.state);
+    }
+out:
+    free(w);
+    free(tids);
+    free(ix.off);
+    hm_hmar_close(probe);
+    return rc;
 }
