@@ -29,7 +29,11 @@ void hm_md5(const uint8_t *msg, size_t len, uint8_t out[16]);
 
 /* --- other algos (digest mode) --- */
 void hm_sha1(const uint8_t *msg, size_t len, uint8_t out[20]);
+
+extern const uint32_t HM_SHA256_H0[8];
 void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32]);
+/* single-block 4-way SHA-256 compression (cracking fast paths) */
+void hm_sha256_transform4(uint32_t st[4][8], const uint8_t blk[4][64]);
 
 /* incremental SHA-256 for streaming checksums */
 typedef struct {

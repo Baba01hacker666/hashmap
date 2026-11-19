@@ -96,6 +96,17 @@ static void md5_out(const uint32_t st[4], uint8_t out[16])
     }
 }
 
+/* digest bytes of a finished SHA-256 state (big endian words) */
+static void sha256_out(const uint32_t st[8], uint8_t out[32])
+{
+    for (int i = 0; i < 8; i++) {
+        out[4 * i] = (uint8_t)(st[i] >> 24);
+        out[4 * i + 1] = (uint8_t)(st[i] >> 16);
+        out[4 * i + 2] = (uint8_t)(st[i] >> 8);
+        out[4 * i + 3] = (uint8_t)(st[i]);
+    }
+}
+
 /* Build the single MD5 block for a line (salt included). Returns -1 when the
  * message does not fit one block and has to use the generic path. */
 static int wl_md5_block(const char *line, size_t len, uint8_t blk[64])
@@ -121,6 +132,33 @@ static int wl_md5_block(const char *line, size_t len, uint8_t blk[64])
     blk[n] = 0x80;
     for (int i = 0; i < 8; i++)
         blk[56 + i] = (uint8_t)(bits >> (8 * i));
+    return 0;
+}
+
+/* Build the single SHA-256 block for a line (salt included). */
+static int wl_sha256_block(const char *line, size_t len, uint8_t blk[64])
+{
+    size_t total = (size_t)g_wl.salt_len + len;
+    size_t n = 0;
+    uint64_t bits;
+
+    if (total > 55)
+        return -1;
+    memset(blk, 0, 64);
+    if (g_wl.salt_len > 0 && g_wl.salt_pre) {
+        memcpy(blk, g_wl.salt, (size_t)g_wl.salt_len);
+        n = (size_t)g_wl.salt_len;
+    }
+    memcpy(blk + n, line, len);
+    n += len;
+    if (g_wl.salt_len > 0 && !g_wl.salt_pre) {
+        memcpy(blk + n, g_wl.salt, (size_t)g_wl.salt_len);
+        n += (size_t)g_wl.salt_len;
+    }
+    bits = (uint64_t)total * 8;
+    blk[n] = 0x80;
+    for (int i = 0; i < 8; i++)
+        blk[56 + i] = (uint8_t)(bits >> (56 - 8 * i));
     return 0;
 }
 
@@ -230,6 +268,38 @@ static void *wl_worker(void *arg)
                 continue;
             }
 
+            if (!g_wl.use_bcrypt && g_wl.algo == HM_ALG_SHA256) {
+                uint8_t blk[4][64];
+                uint32_t st[4][8];
+                int b = 0;
+
+                for (; b < n; b++) {
+                    if (wl_sha256_block(g_wl.data + offs[b], lens[b],
+                                        blk[b]) != 0)
+                        break;
+                    memcpy(st[b], HM_SHA256_H0, sizeof(HM_SHA256_H0));
+                }
+                if (b == n && n == 4) {
+                    hm_sha256_transform4(st, (const uint8_t (*)[64])blk);
+                    for (int l = 0; l < n; l++) {
+                        sha256_out(st[l], dg);
+                        wl_hit(dg, 32, g_wl.data + offs[l], lens[l]);
+                    }
+                    continue;
+                }
+                if (b != n) {
+                    /* a long line in batch: hash this batch generically */
+                    size_t dlen = hm_algo_size(g_wl.algo);
+
+                    for (int l = 0; l < n; l++) {
+                        wl_hash(g_wl.data + offs[l], lens[l], dg, NULL);
+                        wl_hit(dg, dlen, g_wl.data + offs[l], lens[l]);
+                    }
+                    continue;
+                }
+                /* n < 4, all short: fall through to generic path below */
+            }
+
             if (g_wl.use_bcrypt) {
                 for (int l = 0; l < n; l++) {
                     for (int t = 0; t < g_wl.ntargets; t++) {
@@ -245,7 +315,7 @@ static void *wl_worker(void *arg)
                 continue;
             }
 
-            /* sha1/sha256 wordlists: one digest per line, all targets */
+            /* sha1/sha256 (non-batched) or fallback: one digest per line */
             {
                 size_t dlen = hm_algo_size(g_wl.algo);
 

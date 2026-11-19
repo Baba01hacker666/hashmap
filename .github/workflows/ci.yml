@@ -39,6 +39,20 @@ jobs:
             -H 5f4dcc3b5aa765d61d8327deb882cf99
           # rebuild default binary for subsequent steps
           make clean && make
+      - name: Speed benchmarks (GH runner)
+        run: |
+          set -eu
+          echo "cpu: $(nproc) cores"
+          grep -m1 'model name' /proc/cpuinfo || true
+          echo "--- md5 brute ---"
+          ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t 1 2>&1 | tail -1
+          ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t "$(nproc)" 2>&1 | tail -1
+          echo "--- sha256 brute ---"
+          ./hashmap brute -H 0000000000000000000000000000000000000000000000000000000000000000 -c digits --max 7 -t "$(nproc)" 2>&1 | tail -1
+          echo "--- wordlist (10M) ---"
+          seq 1 10000000 > /tmp/wl-bench.txt
+          ./hashmap wordlist -w /tmp/wl-bench.txt -H 00000000000000000000000000000000 -t "$(nproc)" 2>&1 | tail -1
+          ./hashmap wordlist -w /tmp/wl-bench.txt -H 0000000000000000000000000000000000000000000000000000000000000000 -t "$(nproc)" 2>&1 | tail -1
       - name: Portable static build
         run: make portable
       - name: Sanitizer build

@@ -390,7 +390,7 @@ static const uint32_t SHA256_K[64] = {
     0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
-static const uint32_t SHA256_H0[8] = {
+const uint32_t HM_SHA256_H0[8] = {
     0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
     0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
 };
@@ -445,11 +445,68 @@ static void sha256_blocks(uint32_t h[8], const uint32_t K[64],
     }
 }
 
+
+/* Four independent SHA-256 compressions in one pass (single block each).
+ * st[lane][0..7], blk[lane][64]. Mirrors hm_md5_transform4 for cracking. */
+void hm_sha256_transform4(uint32_t st[4][8], const uint8_t blk[4][64])
+{
+    uint32_t w[4][64];
+    uint32_t a[4], b[4], c[4], d[4], e[4], f[4], g[4], hh[4];
+
+    for (int l = 0; l < 4; l++) {
+        for (int j = 0; j < 16; j++) {
+            const uint8_t *p = blk[l] + 4 * j;
+            w[l][j] = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                      ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+        }
+        for (int j = 16; j < 64; j++) {
+            uint32_t s0 = ((w[l][j - 15] >> 7) | (w[l][j - 15] << 25)) ^
+                          ((w[l][j - 15] >> 18) | (w[l][j - 15] << 14)) ^
+                          (w[l][j - 15] >> 3);
+            uint32_t s1 = ((w[l][j - 2] >> 17) | (w[l][j - 2] << 15)) ^
+                          ((w[l][j - 2] >> 19) | (w[l][j - 2] << 13)) ^
+                          (w[l][j - 2] >> 10);
+            w[l][j] = w[l][j - 16] + s0 + w[l][j - 7] + s1;
+        }
+        a[l] = st[l][0]; b[l] = st[l][1]; c[l] = st[l][2]; d[l] = st[l][3];
+        e[l] = st[l][4]; f[l] = st[l][5]; g[l] = st[l][6]; hh[l] = st[l][7];
+    }
+
+    for (int j = 0; j < 64; j++) {
+        const uint32_t kj = SHA256_K[j];
+        for (int l = 0; l < 4; l++) {
+            uint32_t S1 = ((e[l] >> 6) | (e[l] << 26)) ^
+                          ((e[l] >> 11) | (e[l] << 21)) ^
+                          ((e[l] >> 25) | (e[l] << 7));
+            uint32_t ch = (e[l] & f[l]) ^ (~e[l] & g[l]);
+            uint32_t t1 = hh[l] + S1 + ch + kj + w[l][j];
+            uint32_t S0 = ((a[l] >> 2) | (a[l] << 30)) ^
+                          ((a[l] >> 13) | (a[l] << 19)) ^
+                          ((a[l] >> 22) | (a[l] << 10));
+            uint32_t mj = (a[l] & b[l]) ^ (a[l] & c[l]) ^ (b[l] & c[l]);
+            uint32_t t2 = S0 + mj;
+            hh[l] = g[l];
+            g[l] = f[l];
+            f[l] = e[l];
+            e[l] = d[l] + t1;
+            d[l] = c[l];
+            c[l] = b[l];
+            b[l] = a[l];
+            a[l] = t1 + t2;
+        }
+    }
+
+    for (int l = 0; l < 4; l++) {
+        st[l][0] += a[l]; st[l][1] += b[l]; st[l][2] += c[l]; st[l][3] += d[l];
+        st[l][4] += e[l]; st[l][5] += f[l]; st[l][6] += g[l]; st[l][7] += hh[l];
+    }
+}
+
 void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32])
 {
     uint32_t h[8];
 
-    memcpy(h, SHA256_H0, sizeof(h));
+    memcpy(h, HM_SHA256_H0, sizeof(h));
 
     size_t i = 0;
     while (i + 64 <= len) {
@@ -480,7 +537,7 @@ void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32])
 
 void hm_sha256_init(hm_sha256_ctx *c)
 {
-    memcpy(c->h, SHA256_H0, sizeof(c->h));
+    memcpy(c->h, HM_SHA256_H0, sizeof(c->h));
     c->used = 0;
     c->total = 0;
 }
