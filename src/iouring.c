@@ -2,6 +2,8 @@
  *
  * MIT License - Copyright (c) 2026 baba01hacker666
  */
+#include "compat.h"
+
 #include "iouring.h"
 
 #include <errno.h>
@@ -15,10 +17,11 @@
 
 #if defined(HM_USE_IO_URING) && defined(__linux__)
 #include <fcntl.h>
-#include <liburing.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <liburing.h>
 #endif
 
 int hm_kernel_at_least(int major, int minor)
@@ -92,7 +95,7 @@ int hm_iouring_read_file(const char *path, char **out, size_t *outlen)
                 want = chunk;
             if (sqe == NULL)
                 break;
-            io_uring_prep_read(sqe, fd, buf + off, (unsigned)want, off);
+            io_uring_prep_read(sqe, fd, buf + off, (unsigned)want, (__u64)off);
             io_uring_sqe_set_data(sqe, (void *)(uintptr_t)want);
             off += (off_t)want;
             inflight++;
