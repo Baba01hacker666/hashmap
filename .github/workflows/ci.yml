@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build with maximum warnings as errors
         run: make clean && make
+      - name: Build the archive companion
+        run: make hashmap-archive
       - name: Run test suite
         run: ./tests/run.sh ./hashmap
       - name: Check the map archive and RSM1 codecs

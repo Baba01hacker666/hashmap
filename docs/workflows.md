@@ -7,6 +7,7 @@
 | `wordlists.yml` | manual, weekly | uses the combined password list from the `wordlists` release (downloads it, does not rebuild it) |
 | `lookup.yml` | manual | looks hashes up: password list first, brute force as the fallback — see [lookup.md](lookup.md) |
 | `farm.yml` | manual, every 6 hours | a brute force that resumes across runs — see [resume.md](resume.md) |
+| `maps-archive.yml` | manual | repacks the published maps as HMARCH2 `.hmar` assets in the `maps` release; `hashmap search` reads them directly |
 
 ## Release
 

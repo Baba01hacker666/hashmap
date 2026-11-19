@@ -9,7 +9,7 @@ hashmap <mode> [options]
 | `digest` | hash a string or a file |
 | `brute` | crack MD5 hashes by brute force over a keyspace |
 | `map` | write a `digest -> plaintext` map file for a whole keyspace |
-| `search` | look hashes up inside a map file |
+| `search` | look hashes up inside a map file or an HMARCH2 archive |
 | `wordlist` | match target hashes against a wordlist |
 
 `hashmap --help` shows the mode list and the shared flags,
@@ -134,13 +134,16 @@ hashmap-archive pack digs.hmar.hmmap.tmp digs.hmar
 Keep the staging file until packing succeeds: a fresh archive run will not
 overwrite an existing staging map. Resume works as usual: an interrupted run
 (one that saved state but did not finish) continues appending to the staging
-file. To search an archived map, unpack it first (`hashmap-archive unpack`).
+file. `hashmap search` reads HMARCH1/HMARCH2 archives directly, so a `.hmar`
+can be searched without unpacking it; `hashmap-archive unpack` is only needed
+when another tool wants the exact plain file.
 Map files carry their algorithm and digest length in the header
 (`HMMAP 2`); the old `HMMAP 1` maps (MD5) are still readable.
 
 For storage **without** truncating anything, pack the finished file with the optional
-[`hashmap-archive` companion](archive.md). It restores the exact map bytes; the
-archive itself is not a searchable or resumable map.
+[`hashmap-archive` companion](archive.md). It restores the exact map bytes,
+and `search` decodes the archive on the fly; the archive is not an
+appendable or resumable map.
 
 ### bcrypt
 
@@ -177,14 +180,18 @@ be continued without losing the records already written.
 
 ```sh
 hashmap search -H 202cb962ac59075b964b07152d234b70 digs.hmmap
+hashmap search -H 202cb962ac59075b964b07152d234b70 digs.hmar
 hashmap search -F targets.txt digs.hmmap
 hashmap search -H <md5hex> *.hmmap            # several shards
-hashmap search -H <md5hex> /path/to/maps/     # every *.hmmap in a directory
+hashmap search -H <md5hex> *.hmar             # lossless archives
+hashmap search -H <md5hex> /path/to/maps/     # every *.hmmap/*.hmar in a directory
 ```
 
 Prints `<hash>:<plaintext>` for every hash found in the map. Exit code `1` if
 some hash was not found. Scanning stops as soon as all requested hashes were
 found, so a directory of shards is cheap when the answer is in an early one.
+`.hmmap` and `.hmar` files can be mixed freely: an archive is decoded on the
+fly, and its SHA-256 is checked while streaming.
 
 ## wordlist
 

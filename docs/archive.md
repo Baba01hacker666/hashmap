@@ -11,6 +11,31 @@ cmp assets.hmmap restored.hmmap
 
 The executable can be copied by itself to another machine with Python, or installed with `make install-archive`. In the checkout, `python3 hmarchive.py ...` works without a build. The default build and the C binary do not need Python.
 
+## Searching an archive without restoring it
+
+`hashmap search` recognises the HMARCH1/HMARCH2 magic and decodes the groups
+in place, so the compressed maps in the `maps` release work as they are:
+
+```sh
+hashmap search -H 5f4dcc3b5aa765d61d8327deb882cf99 wordlist-map.hmar
+hashmap search -H <sha256hex> wordlist-map-sha256.hmar
+hashmap search -F targets.txt /path/to/maps/
+```
+
+`.hmmap` and `.hmar` files can be mixed in one call or one directory. The
+streamed SHA-256 is verified; a damaged, truncated or unsupported archive is
+an error, never a silent empty result. `unpack` is still the way to get a
+byte-exact file for tools that need one.
+
+The reader handles predicted digests, literal digest lanes, subblock lanes
+and digest tables. An archive whose encoder chose **ranked digest
+exceptions** is rejected with a message that asks for an unpack: that lane
+can only occur when a stored digest is not the map algorithm's digest of its
+key, which the `map` mode never produces. For MD5/SHA-1/SHA-256 maps the
+search recomputes the digest from the decoded plaintext; bcrypt maps store
+their literal 23-byte digests. The compared bytes are the ones `unpack`
+would restore.
+
 `hashmap map --archive` packs a map through this companion the moment the
 keyspace finishes (see [usage](usage.md#archiving-the-map---archive)) — the
 C tool writes the plain map to a staging file, the companion publishes the

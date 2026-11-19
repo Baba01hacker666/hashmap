@@ -26,6 +26,18 @@ void hm_md5(const uint8_t *msg, size_t len, uint8_t out[16]);
 void hm_sha1(const uint8_t *msg, size_t len, uint8_t out[20]);
 void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32]);
 
+/* incremental SHA-256 for streaming checksums */
+typedef struct {
+    uint32_t h[8];
+    uint8_t buf[64];
+    size_t used;
+    uint64_t total;
+} hm_sha256_ctx;
+
+void hm_sha256_init(hm_sha256_ctx *c);
+void hm_sha256_update(hm_sha256_ctx *c, const void *data, size_t len);
+void hm_sha256_final(hm_sha256_ctx *c, uint8_t out[32]);
+
 /* --- generic dispatch --- */
 const char *hm_algo_name(hm_algo_t alg);
 int hm_algo_parse(const char *name, hm_algo_t *out);

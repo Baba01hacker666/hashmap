@@ -370,6 +370,65 @@ void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32])
     }
 }
 
+void hm_sha256_init(hm_sha256_ctx *c)
+{
+    memcpy(c->h, SHA256_H0, sizeof(c->h));
+    c->used = 0;
+    c->total = 0;
+}
+
+void hm_sha256_update(hm_sha256_ctx *c, const void *data, size_t len)
+{
+    const uint8_t *p = data;
+
+    c->total += (uint64_t)len;
+    if (c->used != 0) {
+        size_t want = 64 - c->used;
+        size_t take = len < want ? len : want;
+
+        memcpy(c->buf + c->used, p, take);
+        c->used += take;
+        p += take;
+        len -= take;
+        if (c->used == 64) {
+            sha256_blocks(c->h, SHA256_K, c->buf, 1);
+            c->used = 0;
+        }
+    }
+    while (len >= 64) {
+        sha256_blocks(c->h, SHA256_K, p, 1);
+        p += 64;
+        len -= 64;
+    }
+    if (len != 0) {
+        memcpy(c->buf, p, len);
+        c->used = len;
+    }
+}
+
+void hm_sha256_final(hm_sha256_ctx *c, uint8_t out[32])
+{
+    uint64_t bits = c->total * 8;
+
+    c->buf[c->used++] = 0x80;
+    if (c->used > 56) {
+        memset(c->buf + c->used, 0, 64 - c->used);
+        sha256_blocks(c->h, SHA256_K, c->buf, 1);
+        c->used = 0;
+    }
+    memset(c->buf + c->used, 0, 56 - c->used);
+    for (size_t j = 0; j < 8; j++)
+        c->buf[56 + j] = (uint8_t)(bits >> (56 - 8 * j));
+    sha256_blocks(c->h, SHA256_K, c->buf, 1);
+
+    for (size_t j = 0; j < 8; j++) {
+        out[4 * j] = (uint8_t)(c->h[j] >> 24);
+        out[4 * j + 1] = (uint8_t)(c->h[j] >> 16);
+        out[4 * j + 2] = (uint8_t)(c->h[j] >> 8);
+        out[4 * j + 3] = (uint8_t)(c->h[j]);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* generic dispatch                                                    */
 /* ------------------------------------------------------------------ */

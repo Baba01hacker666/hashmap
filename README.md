@@ -5,7 +5,7 @@ Fast multi-threaded hash toolkit in pure C — no deps, just `cc` and pthreads.
 - **digest** — hash a string or a file (MD5 / SHA-1 / SHA-256, salted or not)
 - **brute** — crack MD5 hashes by brute force, over any charset and length range
 - **map** — build a `digest -> plaintext` map of a keyspace
-- **search** — look hashes up inside a map file
+- **search** — look hashes up inside a map file or an HMARCH2 archive
 - **wordlist** — match target hashes against a password list (MD5, SHA-256, bcrypt)
 
 Every long run is **resumable**: stop it, and it continues exactly where it
@@ -24,11 +24,12 @@ Requires a C11 compiler (gcc or clang) and pthreads.
 
 ## Lossless map storage
 
-The optional `hashmap-archive` companion combines RSM1's field compression with the ordered map archive. It packs **existing** HMMAP files without sorting rows, dropping duplicates, or truncating digests. The C build and map format are unchanged.
+The optional `hashmap-archive` companion combines RSM1's field compression with the ordered map archive. It packs **existing** HMMAP files without sorting rows, dropping duplicates, or truncating digests. The map format is unchanged, and `search` decodes an archive directly — no restore step:
 
 ```sh
 make hashmap-archive      # Python 3.10+, no third-party packages
 ./hashmap-archive pack assets.hmmap assets.hmar
+./hashmap search -H <md5hex> assets.hmar
 ./hashmap-archive unpack assets.hmar restored.hmmap
 cmp assets.hmmap restored.hmmap
 ```

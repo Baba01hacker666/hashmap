@@ -2,7 +2,7 @@
 
 A map row stores both a byte string `x` and a digest `a`. Even if every row is unique, once `x` is known there may be **only one possible value** for `a`. Store `x` and encode only what the prediction `F(x)` gets wrong. Unpacking recovers the original byte stream, not just an equivalent set of entries. Two rows with the same digest, two different digests for one string, repeated rows and their order all survive.
 
-This is an experimental **archive**, not a new lookup table. It operates on an existing file and doesn't change the C tools. No external dictionary, original wordlist, sorting, ZIP or digest truncation is involved.
+This is an experimental **archive**, not a new lookup table. It operates on an existing file and leaves the C map format unchanged; the C `search` mode decodes HMARCH1/HMARCH2 archives directly. No external dictionary, original wordlist, sorting, ZIP or digest truncation is involved.
 
 This page describes **HMARCH1**, which remains readable and writable. The [`hashmap-archive` companion](../../docs/archive.md) combines these blocks with RSM1 field lanes in HMARCH2; `make archive-compare` measures both versions on the same files.
 

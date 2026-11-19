@@ -159,10 +159,12 @@ void hm_usage_map(void)
 void hm_usage_search(void)
 {
     printf(
-        "usage: %s search -H <md5hex> [-F <file>] <map.hmmap>...\n"
+        "usage: %s search -H <md5hex> [-F <file>] <map.hmmap|map.hmar>...\n"
         "\n"
         "look hashes up inside the map files written by '%s map'.\n"
-        "several files and/or a directory of *.hmmap files can be given.\n"
+        "HMARCH1/HMARCH2 archives (.hmar) are decoded on the fly, so they\n"
+        "can be searched without unpacking them first.\n"
+        "several files and/or a directory of *.hmmap/*.hmar files can be given.\n"
         "\n"
         "  -H, --hash <md5hex>        hash to look up (repeatable)\n"
         "  -F, --hash-file <file>     file of hashes, one per line\n"
@@ -170,8 +172,9 @@ void hm_usage_search(void)
         "\n"
         "examples:\n"
         "  %s search -H 202cb962ac59075b964b07152d234b70 digs.hmmap\n"
+        "  %s search -H <md5hex> wordlist-map.hmar\n"
         "  %s search -F targets.txt /path/to/maps/\n",
-        hm_prog, hm_prog, hm_prog, hm_prog);
+        hm_prog, hm_prog, hm_prog, hm_prog, hm_prog);
 }
 
 void hm_usage_wordlist(void)

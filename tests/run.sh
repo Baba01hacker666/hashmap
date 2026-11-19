@@ -491,6 +491,45 @@ if [ -x "$ARCH" ]; then
     else
         bad "archive: map --archive packs via the companion"
     fi
+
+    # the archive itself is searchable without unpacking it
+    out=$("$BIN" search -H "$(md5_of 42)" "$TMP/arch.hmar" 2>/dev/null)
+    case "$out" in
+        *":42") ok "archive: search decodes .hmar directly" ;;
+        *) bad "archive: search decodes .hmar directly (got=$out)" ;;
+    esac
+
+    # HMARCH1 archives are readable too
+    if "$ARCH" pack --legacy "$TMP/arch.hmmap" "$TMP/legacy.hmar" 2>/dev/null; then
+        out=$("$BIN" search -H "$(md5_of 42)" "$TMP/legacy.hmar" 2>/dev/null)
+        case "$out" in
+            *":42") ok "archive: search reads HMARCH1 archives" ;;
+            *) bad "archive: search reads HMARCH1 archives (got=$out)" ;;
+        esac
+    else
+        bad "archive: search reads HMARCH1 archives (pack failed)"
+    fi
+
+    # a bcrypt archive keeps its literal digests and its salt check
+    if "$ARCH" pack "$TMP/bc.hmmap" "$TMP/bc.hmar" 2>/dev/null; then
+        out=$("$BIN" search -H "$BC_HASH" "$TMP/bc.hmar" 2>/dev/null)
+        case "$out" in
+            *":password") ok "archive: bcrypt digests decode from .hmar" ;;
+            *) bad "archive: bcrypt digests decode from .hmar (got=$out)" ;;
+        esac
+        "$BIN" search -H "$BC_OTHER" "$TMP/bc.hmar" >/dev/null 2>&1
+        [ $? -ne 0 ] && ok "archive: bcrypt salt mismatch is refused" \
+            || bad "archive: bcrypt salt mismatch is refused"
+    else
+        bad "archive: bcrypt digests decode from .hmar (pack failed)"
+    fi
+
+    # a damaged archive is rejected by the checksum
+    cp "$TMP/arch.hmar" "$TMP/damaged.hmar"
+    printf '\377' | dd of="$TMP/damaged.hmar" bs=1 seek=40 conv=notrunc status=none
+    "$BIN" search -H "$(md5_of 42)" "$TMP/damaged.hmar" >/dev/null 2>&1
+    [ $? -ne 0 ] && ok "archive: a damaged archive is rejected" \
+        || bad "archive: a damaged archive is rejected"
     # an existing archive destination is never overwritten
     HM_ARCHIVE="$ARCH" "$BIN" map -o "$TMP/arch.hmar" -c digits \
         --max 2 --archive --state "$TMP/arch2.state" >/dev/null 2>&1

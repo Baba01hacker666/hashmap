@@ -2,7 +2,8 @@ name: maps archive v2
 
 # Repack the published wordlist maps as HMARCH2 (v2) archives and publish the
 # new .hmar assets in the same `maps` release. The original .hmmap files stay
-# in place: the archives are lossless but must be unpacked before searching.
+# in place: the archives are lossless and `hashmap search` decodes them
+# directly, so unpacking is only needed for a byte-exact plain file.
 #
 # Packing 34M rows is CPU-bound, so each map gets its own runner and the
 # groups are encoded in parallel (tools/pack-map-parallel.py).
@@ -117,9 +118,10 @@ jobs:
 
           print("\n## HMARCH2 (v2) archives\n")
           print("The complete maps, repacked losslessly with "
-                "`hashmap-archive` (HMARCH2). Unpack before searching — an "
-                "archive is not a searchable map.\n")
+                "`hashmap-archive` (HMARCH2). `hashmap search` decodes them "
+                "directly; unpack only when you need the exact plain file.\n")
           print("```sh")
+          print("hashmap search -H <hex> wordlist-map.hmar")
           print("./hashmap-archive unpack wordlist-map.hmar wordlist-map.hmmap")
           print("```\n")
           print("| map | plain HMMAP | HMARCH2 (v2) | saved | reduction |")

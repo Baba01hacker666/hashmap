@@ -16,6 +16,7 @@
 #include "crypto.h"
 #include "engine.h"
 #include "hashmap.h"
+#include "hmar.h"
 #include "util.h"
 
 #define HM_MAP_MAGIC "HMMAP 2\n"
@@ -27,6 +28,7 @@ typedef struct {
     uint8_t bytes[32];
     char hex[65];
     char salt[48]; /* the bcrypt setting of this hash */
+    int width;     /* stored digest bytes for this hash */
     int found;
 } want_t;
 
@@ -67,8 +69,10 @@ static int sl_add_dir(strlist_t *l, const char *dir)
     }
     while ((e = readdir(d)) != NULL) {
         size_t len = strlen(e->d_name);
+        int is_map = len >= 6 && strcmp(e->d_name + len - 6, ".hmmap") == 0;
+        int is_arc = len >= 5 && strcmp(e->d_name + len - 5, ".hmar") == 0;
 
-        if (len < 6 || strcmp(e->d_name + len - 6, ".hmmap") != 0)
+        if (!is_map && !is_arc)
             continue;
         if (n >= cap) {
             int ncap = (cap == 0) ? 16 : cap * 2;
@@ -122,8 +126,8 @@ static int sl_add_dir(strlist_t *l, const char *dir)
     return 0;
 }
 
-/* scan one map file for the wanted hashes */
-static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
+/* scan one plain HMMAP file for the wanted hashes */
+static int scan_plain(const char *path, want_t *wants, int nwants, FILE *outf)
 {
     FILE *f = fopen(path, "rb");
     char magic[HM_MAP_MAGIC_LEN];
@@ -233,6 +237,8 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
         for (int i = 0; i < nwants; i++) {
             if (wants[i].found)
                 continue;
+            if (wants[i].width < dlen)
+                continue; /* the want is narrower than the stored digest */
             if (memcmp(wants[i].bytes, rec, (size_t)dlen) == 0) {
                 printf("%s:%s\n", wants[i].hex, plain);
                 if (outf != NULL) {
@@ -246,6 +252,94 @@ static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
     }
     fclose(f);
     return 0;
+}
+
+/* scan an HMARCH1/HMARCH2 archive without restoring it first */
+static int scan_archive(const char *path, want_t *wants, int nwants, FILE *outf)
+{
+    hm_hmar_t *ar = NULL;
+    int dlen;
+    int rows;
+    int rc = 0;
+
+    if (hm_hmar_open(path, &ar) < 0)
+        return -1;
+    dlen = hm_hmar_dlen(ar);
+    if (hm_hmar_salt(ar)[0] != '\0') {
+        /* a bcrypt map: the hashes must use the same salt */
+        for (int i = 0; i < nwants; i++) {
+            if (wants[i].salt[0] == '\0')
+                continue;
+            if (strcmp(wants[i].salt, hm_hmar_salt(ar)) != 0) {
+                fprintf(stderr,
+                        "[-] the map was built with '%s' but the hash uses "
+                        "'%s'\n",
+                        hm_hmar_salt(ar), wants[i].salt);
+                hm_hmar_close(ar);
+                return -1;
+            }
+        }
+    }
+    for (;;) {
+        int got = hm_hmar_next(ar, &rows);
+
+        if (got < 0) {
+            rc = -1;
+            break;
+        }
+        if (got == 0)
+            break;
+        for (int r = 0; r < rows; r++) {
+            size_t klen = 0;
+            const uint8_t *key = hm_hmar_key(ar, r, &klen);
+            const uint8_t *dig = hm_hmar_digest(ar, r);
+            char plain[256];
+
+            if (dig == NULL)
+                continue;
+            for (int i = 0; i < nwants; i++) {
+                if (wants[i].found)
+                    continue;
+                if (wants[i].width < dlen)
+                    continue;
+                if (memcmp(wants[i].bytes, dig, (size_t)dlen) != 0)
+                    continue;
+                if (klen >= sizeof(plain))
+                    klen = sizeof(plain) - 1;
+                memcpy(plain, key, klen);
+                plain[klen] = '\0';
+                printf("%s:%s\n", wants[i].hex, plain);
+                if (outf != NULL) {
+                    fprintf(outf, "%s:%s\n", wants[i].hex, plain);
+                    fflush(outf);
+                }
+                wants[i].found = 1;
+                break;
+            }
+        }
+    }
+    hm_hmar_close(ar);
+    return rc;
+}
+
+/* dispatch on the file magic: plain map or lossless archive */
+static int scan_map(const char *path, want_t *wants, int nwants, FILE *outf)
+{
+    FILE *f = fopen(path, "rb");
+    char magic[8];
+    size_t got;
+
+    if (f == NULL) {
+        fprintf(stderr, "[-] cannot open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    got = fread(magic, 1, sizeof(magic), f);
+    fclose(f);
+    if (got == sizeof(magic) &&
+        (memcmp(magic, "HMARCH1\n", 8) == 0 ||
+         memcmp(magic, "HMARCH2\n", 8) == 0))
+        return scan_archive(path, wants, nwants, outf);
+    return scan_plain(path, wants, nwants, outf);
 }
 
 int hm_mode_search(int argc, char **argv)
@@ -291,11 +385,13 @@ int hm_mode_search(int argc, char **argv)
                     goto out;
                 memcpy(wants[nwants].bytes, tg.bytes, 23);
                 memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
+                wants[nwants].width = 23;
             } else {
                 if (hm_parse_target(hm_optarg, &tg) < 0)
                     goto out;
                 memcpy(wants[nwants].bytes, tg.bytes, strlen(tg.hex) / 2);
                 memcpy(wants[nwants].hex, tg.hex, strlen(tg.hex) + 1);
+                wants[nwants].width = (int)(strlen(tg.hex) / 2);
             }
             wants[nwants].found = 0;
             nwants++;
@@ -322,6 +418,7 @@ int hm_mode_search(int argc, char **argv)
                 memcpy(wants[nwants].bytes, tgs[i].bytes,
                        strlen(tgs[i].hex) / 2);
                 memcpy(wants[nwants].hex, tgs[i].hex, strlen(tgs[i].hex) + 1);
+                wants[nwants].width = (int)(strlen(tgs[i].hex) / 2);
                 wants[nwants].found = 0;
                 nwants++;
             }

@@ -12,6 +12,7 @@ src/engine.c     threaded keyspace walker, state save/load
 src/digest.c     digest mode
 src/brute.c      brute mode
 src/map.c        map mode
+src/hmar.c       streaming HMARCH1/HMARCH2 archive decoder for search
 src/search.c     search mode
 src/main.c       mode dispatch and usage texts
 tests/run.sh     test suite
