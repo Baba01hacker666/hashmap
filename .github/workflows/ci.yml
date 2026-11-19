@@ -27,6 +27,18 @@ jobs:
           python3 -B research/rsm1/bench.py --tests-only
           make -C research/rsm1 check
           make evil-test
+      - name: Experimental io_uring build + smoke (Linux >= 5.1)
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y liburing-dev
+          make clean && make IO_URING=1
+          printf '123\npassword\n' > /tmp/wl-io.txt
+          ./hashmap wordlist --io-uring -w /tmp/wl-io.txt \
+            -H 202cb962ac59075b964b07152d234b70 \
+            -H 5f4dcc3b5aa765d61d8327deb882cf99
+          # rebuild default binary for subsequent steps
+          make clean && make
       - name: Portable static build
         run: make portable
       - name: Sanitizer build

@@ -1142,6 +1142,88 @@ static void *worker(void *arg)
             idx = lo;
             if (g_wmode)
                 idx_to_digits(0, digs, 0, 1); /* unused in wordlist mode */
+            if (!g_wmode && !g_cfg->use_bcrypt &&
+                g_cfg->algo == HM_ALG_MD5 && ctx.fast) {
+                /* Four candidates per compression round. The MD5 chains of
+                 * separate candidates are independent, so the core can
+                 * overlap them instead of waiting on one dependency chain. */
+                uint8_t blk[4][64];
+
+                for (int l = 0; l < 4; l++)
+                    memcpy(blk[l], ctx.blk, sizeof(ctx.blk));
+                while (idx < hi) {
+                    uint8_t digs4[4][HM_MAX_PWLEN];
+                    uint32_t st[4][4];
+                    int n = 0;
+                    bool end = false;
+
+                    if (atomic_load(&hm_stop) != 0)
+                        goto stop_span;
+                    while (n < 4 && idx < hi) {
+                        for (int kk = 0; kk < L; kk++)
+                            blk[n][ctx.cand_off + kk] =
+                                (uint8_t)cs[digs[kk]];
+                        memcpy(digs4[n], digs, (size_t)L);
+                        memcpy(st[n], ctx.base, sizeof(ctx.base));
+                        n++;
+                        idx++;
+                        if (!odom_next(digs, L, g_cfg->cslen)) {
+                            end = true; /* keyspace wrapped */
+                            break;
+                        }
+                    }
+                    if (n == 4)
+                        hm_md5_transform4(st, (const uint8_t (*)[64])blk);
+                    else
+                        for (int l = 0; l < n; l++)
+                            hm_md5_transform(st[l], blk[l]);
+                    for (int l = 0; l < n; l++) {
+                        for (int i = 0; i < 4; i++) {
+                            dg[4 * i] = (uint8_t)(st[l][i]);
+                            dg[4 * i + 1] = (uint8_t)(st[l][i] >> 8);
+                            dg[4 * i + 2] = (uint8_t)(st[l][i] >> 16);
+                            dg[4 * i + 3] = (uint8_t)(st[l][i] >> 24);
+                        }
+                        if (g_cfg->rec != NULL) {
+                            int plen = pre_len + L + post_len;
+
+                            for (int kk = 0; kk < L; kk++)
+                                plain[pre_len + kk] = cs[digs4[l][kk]];
+                            map_record_write(dg, plain, plen);
+                        } else {
+                            const hm_target_t *hit = find_hit(dg);
+
+                            if (hit != NULL) {
+                                char found[HM_MAX_PLAIN];
+
+                                memcpy(found, plain,
+                                       (size_t)(pre_len + L + post_len));
+                                for (int kk = 0; kk < L; kk++)
+                                    found[pre_len + kk] = cs[digs4[l][kk]];
+                                found[pre_len + L + post_len] = '\0';
+                                report_found(hit, found, L);
+                                if (atomic_load(&hm_stop) != 0)
+                                    goto stop_span;
+                            }
+                        }
+                    }
+                    done = idx - lo;
+                    {
+                        uint64_t aligned =
+                            done & ~(uint64_t)(HM_PROGRESS_FLUSH - 1);
+
+                        if (aligned > flushed) {
+                            atomic_fetch_add(&g_done_len[L],
+                                             aligned - flushed);
+                            flushed = aligned;
+                        }
+                    }
+                    if (end)
+                        break;
+                }
+                atomic_fetch_add(&g_done_len[L], (hi - lo) - flushed);
+                continue;
+            }
             for (; idx < hi; idx++) {
                 const char *line = NULL;
                 size_t linelen = 0;
@@ -1462,6 +1544,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
         { "bcrypt", 0, 9 },
         { "bcrypt-cost", 1, 10 },
         { "archive", 0, 11 },
+        { "io-uring", 0, 12 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -1480,6 +1563,7 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
     cfg->maxlen = 6;
     cfg->nthreads = (cores > 1) ? cores : 1;
     cfg->ntargets = 0;
+    cfg->io_uring = 0;
 
     hm_getopt_reset();
     while ((opt = hm_getopt_long(argc, argv, "H:F:c:t:s:p:o:h", lopts)) != -1) {
@@ -1594,6 +1678,9 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                 return -1;
             }
             cfg->archive = 1;
+            break;
+        case 12: /* experimental io_uring file I/O */
+            cfg->io_uring = 1;
             break;
         case 7: /* algo */
             if (hm_algo_parse(hm_optarg, &cfg->algo) < 0) {

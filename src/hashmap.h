@@ -5,7 +5,7 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
-#define HM_VERSION "0.5.0"
+#define HM_VERSION "0.6.0"
 
 #define HM_MAX_TARGETS 4096
 #define HM_MAX_SALT 32

@@ -119,26 +119,37 @@ jobs:
           set -eu
           mkdir -p "$FARM_DIR"
           # 64 hex chars = sha256, 32 hex chars = md5 - a mixed list needs
-          # both maps
-          mapnames=""
-          if grep -qE '^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt"; then
-            mapnames="$mapnames wordlist-map-sha256.hmmap"
-          fi
-          if grep -qE '^[0-9a-f]{32}$' "$FARM_DIR/hashes.txt"; then
-            mapnames="$mapnames wordlist-map.hmmap"
-          fi
-          for mapname in $mapnames; do
-            if gh release download maps --pattern "$mapname" \
+          # both maps. Prefer HMARCH2 archives (smaller, --no-verify for speed).
+          search_map() {
+            base="$1"
+            if gh release download maps --pattern "${base}.hmar" \
                    --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
-              echo "map downloaded ($mapname) - searching it"
+              echo "archive downloaded (${base}.hmar) - searching it"
+              set +e
+              ./hashmap search --no-verify -t "$(nproc)" \
+                  -F "$FARM_DIR/hashes.txt" "$FARM_DIR/${base}.hmar" \
+                  -o "$FARM_DIR/hits-map.txt"
+              set -e
+              return 0
+            fi
+            if gh release download maps --pattern "${base}.hmmap" \
+                   --dir "$FARM_DIR" --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+              echo "map downloaded (${base}.hmmap) - searching it"
               set +e
               ./hashmap search -F "$FARM_DIR/hashes.txt" \
-                  "$FARM_DIR/$mapname" -o "$FARM_DIR/hits-map.txt"
+                  "$FARM_DIR/${base}.hmmap" -o "$FARM_DIR/hits-map.txt"
               set -e
-            else
-              echo "no published map $mapname - skipping it"
+              return 0
             fi
-          done
+            echo "no published map ${base}.{hmar,hmmap} - skipping it"
+            return 0
+          }
+          if grep -qE '^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt"; then
+            search_map wordlist-map-sha256
+          fi
+          if grep -qE '^[0-9a-f]{32}$' "$FARM_DIR/hashes.txt"; then
+            search_map wordlist-map
+          fi
           found=$(cut -d: -f1 "$FARM_DIR"/hits-*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
           echo "found=$found" >> "$GITHUB_OUTPUT"

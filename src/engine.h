@@ -59,6 +59,10 @@ typedef struct {
      * companion instead of leaving the plain .hmmap on disk */
     int archive;
 
+    /* experimental: use io_uring for file I/O on Linux kernels >= 5.1 when
+     * the binary was built with HM_USE_IO_URING. Falls back silently. */
+    int io_uring;
+
     /* map mode: stream of binary records (NULL = plain brute mode) */
     FILE *rec;
 

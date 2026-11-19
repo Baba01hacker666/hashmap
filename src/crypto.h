@@ -20,6 +20,11 @@ typedef enum {
 /* --- md5 low-level --- */
 extern const uint32_t HM_MD5_INIT[4];
 void hm_md5_transform(uint32_t st[4], const uint8_t blk[64]);
+
+/* Four independent MD5 compressions at once; same block/state layout as
+ * hm_md5_transform, one lane per entry. Cracking code uses this to keep the
+ * core busy with four independent dependency chains. */
+void hm_md5_transform4(uint32_t st[4][4], const uint8_t blk[4][64]);
 void hm_md5(const uint8_t *msg, size_t len, uint8_t out[16]);
 
 /* --- other algos (digest mode) --- */

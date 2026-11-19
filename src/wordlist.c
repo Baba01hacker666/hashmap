@@ -18,6 +18,7 @@
 #include "crypto.h"
 #include "engine.h"
 #include "hashmap.h"
+#include "iouring.h"
 #include "util.h"
 
 #define HM_WL_MAX_TARGETS 4096
@@ -84,6 +85,72 @@ static void wl_hash(const char *line, size_t len, uint8_t *out,
     hm_hash(g_wl.algo, buf, n, out, &ol);
 }
 
+/* digest bytes of a finished MD5 state (little endian words) */
+static void md5_out(const uint32_t st[4], uint8_t out[16])
+{
+    for (int i = 0; i < 4; i++) {
+        out[4 * i] = (uint8_t)(st[i]);
+        out[4 * i + 1] = (uint8_t)(st[i] >> 8);
+        out[4 * i + 2] = (uint8_t)(st[i] >> 16);
+        out[4 * i + 3] = (uint8_t)(st[i] >> 24);
+    }
+}
+
+/* Build the single MD5 block for a line (salt included). Returns -1 when the
+ * message does not fit one block and has to use the generic path. */
+static int wl_md5_block(const char *line, size_t len, uint8_t blk[64])
+{
+    size_t total = (size_t)g_wl.salt_len + len;
+    size_t n = 0;
+    uint64_t bits;
+
+    if (total > 55)
+        return -1;
+    memset(blk, 0, 64);
+    if (g_wl.salt_len > 0 && g_wl.salt_pre) {
+        memcpy(blk, g_wl.salt, (size_t)g_wl.salt_len);
+        n = (size_t)g_wl.salt_len;
+    }
+    memcpy(blk + n, line, len);
+    n += len;
+    if (g_wl.salt_len > 0 && !g_wl.salt_pre) {
+        memcpy(blk + n, g_wl.salt, (size_t)g_wl.salt_len);
+        n += (size_t)g_wl.salt_len;
+    }
+    bits = (uint64_t)total * 8;
+    blk[n] = 0x80;
+    for (int i = 0; i < 8; i++)
+        blk[56 + i] = (uint8_t)(bits >> (8 * i));
+    return 0;
+}
+
+static int wl_hit(const uint8_t *dg, size_t dlen, const char *plain, size_t len)
+{
+    for (int t = 0; t < g_wl.ntargets; t++) {
+        if (g_wl.targets[t].found)
+            continue;
+        if (memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
+            continue;
+        pthread_mutex_lock(&g_wl.mtx);
+        if (!g_wl.targets[t].found) {
+            char out[HM_MAX_PLAIN + 1];
+
+            memcpy(out, plain, len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len);
+            out[len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len] = '\0';
+            g_wl.targets[t].found = 1;
+            printf("[+] CRACKED  %s  ->  %s\n", g_wl.targets[t].hex, out);
+            if (g_wl.outf != NULL) {
+                fprintf(g_wl.outf, "%s:%s\n", g_wl.targets[t].hex, out);
+                fflush(g_wl.outf);
+            }
+            atomic_fetch_add(&g_wl.nfound, 1);
+        }
+        pthread_mutex_unlock(&g_wl.mtx);
+        return 1;
+    }
+    return 0;
+}
+
 static void *wl_worker(void *arg)
 {
     (void)arg;
@@ -103,65 +170,119 @@ static void *wl_worker(void *arg)
         if (end > g_wl.nlines)
             end = g_wl.nlines;
 
-        for (i = start; i < end; i++) {
-            size_t off = g_wl.offs[i];
-            size_t eol = g_wl.offs[i + 1];
-            size_t len;
+        i = start;
+        while (i < end) {
+            /* collect up to four lines so MD5 can run four chains at once */
+            size_t offs[4];
+            size_t lens[4];
+            int n = 0;
 
-            while (eol > off && g_wl.data[eol - 1] == '\n')
-                eol--;
-            while (eol > off && g_wl.data[eol - 1] == '\r')
-                eol--;
-            len = eol - off;
-            if (len == 0)
-                continue;
-            if (len > HM_MAX_PLAIN)
-                continue;
-            for (int t = 0; t < g_wl.ntargets; t++) {
-                size_t dlen;
+            while (i < end && n < 4) {
+                size_t off = g_wl.offs[i];
+                size_t eol = g_wl.offs[i + 1];
+                size_t len;
 
-                if (g_wl.targets[t].found)
+                while (eol > off && g_wl.data[eol - 1] == '\n')
+                    eol--;
+                while (eol > off && g_wl.data[eol - 1] == '\r')
+                    eol--;
+                len = eol - off;
+                i++;
+                if (len == 0 || len > HM_MAX_PLAIN)
                     continue;
-                if (g_wl.use_bcrypt) {
-                    /* every bcrypt hash has its own salt */
-                    if (g_wl.targets[t].salt[0] == '\0')
-                        continue;
-                    wl_hash(g_wl.data + off, len, dg, g_wl.targets[t].salt);
-                    dlen = 23;
-                } else {
-                    dlen = (size_t)hm_algo_size(g_wl.algo);
-                    wl_hash(g_wl.data + off, len, dg, NULL);
-                }
-                if (memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
-                    continue;
-                pthread_mutex_lock(&g_wl.mtx);
-                if (!g_wl.targets[t].found) {
-                    char plain[HM_MAX_PLAIN + 1];
-
-                    memcpy(plain, g_wl.data + off, len);
-                    plain[len] = '\0';
-                    g_wl.targets[t].found = 1;
-                    printf("[+] CRACKED  %s  ->  %s\n", g_wl.targets[t].hex,
-                           plain);
-                    if (g_wl.outf != NULL) {
-                        fprintf(g_wl.outf, "%s:%s\n", g_wl.targets[t].hex, plain);
-                        fflush(g_wl.outf);
-                    }
-                    atomic_fetch_add(&g_wl.nfound, 1);
-                }
-                pthread_mutex_unlock(&g_wl.mtx);
+                offs[n] = off;
+                lens[n] = len;
+                n++;
+            }
+            if (n == 0)
                 break;
+            if (atomic_load(&g_wl.stop) != 0)
+                return NULL;
+
+            if (!g_wl.use_bcrypt && g_wl.algo == HM_ALG_MD5) {
+                uint8_t blk[4][64];
+                uint32_t st[4][4];
+                int b = 0;
+
+                for (; b < n; b++) {
+                    if (wl_md5_block(g_wl.data + offs[b], lens[b], blk[b]) != 0)
+                        break;
+                    memcpy(st[b], HM_MD5_INIT, sizeof(st[b]));
+                }
+                if (b == n) {
+                    if (n == 4) {
+                        hm_md5_transform4(st, (const uint8_t (*)[64])blk);
+                    } else {
+                        for (int l = 0; l < n; l++)
+                            hm_md5_transform(st[l], blk[l]);
+                    }
+                    for (int l = 0; l < n; l++) {
+                        md5_out(st[l], dg);
+                        wl_hit(dg, 16, g_wl.data + offs[l], lens[l]);
+                    }
+                    continue;
+                }
+                /* a long line: hash this batch with the generic path */
+                for (int l = 0; l < n; l++) {
+                    wl_hash(g_wl.data + offs[l], lens[l], dg, NULL);
+                    wl_hit(dg, 16, g_wl.data + offs[l], lens[l]);
+                }
+                continue;
+            }
+
+            if (g_wl.use_bcrypt) {
+                for (int l = 0; l < n; l++) {
+                    for (int t = 0; t < g_wl.ntargets; t++) {
+                        if (g_wl.targets[t].found ||
+                            g_wl.targets[t].salt[0] == '\0')
+                            continue;
+                        wl_hash(g_wl.data + offs[l], lens[l], dg,
+                                g_wl.targets[t].salt);
+                        if (wl_hit(dg, 23, g_wl.data + offs[l], lens[l]))
+                            break;
+                    }
+                }
+                continue;
+            }
+
+            /* sha1/sha256 wordlists: one digest per line, all targets */
+            {
+                size_t dlen = hm_algo_size(g_wl.algo);
+
+                for (int l = 0; l < n; l++) {
+                    wl_hash(g_wl.data + offs[l], lens[l], dg, NULL);
+                    wl_hit(dg, dlen, g_wl.data + offs[l], lens[l]);
+                }
             }
         }
     }
 }
 
-static int wl_read_file(const char *path, char **out, size_t *outlen)
+
+static int wl_read_file(const char *path, char **out, size_t *outlen,
+                         int use_io_uring)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f;
     long sz;
     char *buf;
 
+    if (use_io_uring) {
+        if (hm_io_uring_available()) {
+            if (hm_iouring_read_file(path, out, outlen) == 0) {
+                fprintf(stderr,
+                        "[*] io_uring: loaded wordlist with async reads\n");
+                return 0;
+            }
+            fprintf(stderr,
+                    "[-] io_uring read failed, falling back to regular I/O\n");
+        } else {
+            fprintf(stderr,
+                    "[-] io_uring requested but unavailable on this "
+                    "build/kernel, using regular I/O\n");
+        }
+    }
+
+    f = fopen(path, "rb");
     if (f == NULL) {
         fprintf(stderr, "[-] cannot open %s: %s\n", path, strerror(errno));
         return -1;
@@ -209,6 +330,7 @@ int hm_mode_wordlist(int argc, char **argv)
         { "threads", 1, 't' },
         { "algo", 1, 'a' },
         { "first", 0, 'f' },
+        { "io-uring", 0, 1 },
         { "help", 0, 'h' },
         { NULL, 0, 0 }
     };
@@ -223,6 +345,7 @@ int hm_mode_wordlist(int argc, char **argv)
     hm_algo_t algo = HM_ALG_MD5;
     bool algo_set = false;
     bool use_bcrypt = false;
+    int use_io_uring = 0;
     int ntargets = 0;
     int opt;
     int rc = 1;
@@ -354,6 +477,9 @@ int hm_mode_wordlist(int argc, char **argv)
         case 'f':
             stop_first = 1;
             break;
+        case 1: /* --io-uring */
+            use_io_uring = 1;
+            break;
         case 'h':
             hm_usage_wordlist();
             free(targets);
@@ -375,7 +501,7 @@ int hm_mode_wordlist(int argc, char **argv)
         hm_usage_wordlist();
         goto out;
     }
-    if (wl_read_file(wordlist, &data, &data_len) < 0)
+    if (wl_read_file(wordlist, &data, &data_len, use_io_uring) < 0)
         goto out;
 
     /* index the lines once so the workers can jump straight to their block */

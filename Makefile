@@ -3,7 +3,7 @@
 # MIT License - Copyright (c) 2026 baba01hacker666
 
 CC      ?= cc
-MODULES  := util charset crypto bcrypt engine brute digest map search wordlist hmar main
+MODULES  := util charset crypto bcrypt engine brute digest map search wordlist hmar iouring main
 SRCS     := $(MODULES:%=src/%.c)
 OBJS     := $(SRCS:.c=.o)
 DEPS     := $(OBJS:.o=.d)
@@ -15,6 +15,13 @@ HARD_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
                -Wdouble-promotion -Wconversion -Wsign-conversion
 OPT_FAST := -O3 -march=native -flto -pthread -D_FORTIFY_SOURCE=2
 INC := -Isrc
+URING_LIBS :=
+
+ifdef IO_URING
+HARD_CFLAGS += -DHM_USE_IO_URING
+OPT_FAST += -DHM_USE_IO_URING
+URING_LIBS := -luring
+endif
 
 .PHONY: all clean debug portable test install install-hooks
 
@@ -24,7 +31,7 @@ BINDIR ?= $(PREFIX)/bin
 all: $(BIN)
 
 $(BIN): $(OBJS)
-	$(CC) $(OPT_FAST) -o $@ $(OBJS)
+	$(CC) $(OPT_FAST) -o $@ $(OBJS) $(URING_LIBS)
 
 %.o: %.c
 	$(CC) $(HARD_CFLAGS) $(INC) -O3 -MMD -MP -c $< -o $@
@@ -32,7 +39,7 @@ $(BIN): $(OBJS)
 # sanitizer build (exact same strict warnings)
 debug: HM_CFLAGS := $(HARD_CFLAGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -pthread
 debug: $(SRCS)
-	$(CC) $(HM_CFLAGS) $(INC) -fPIC -o $(BIN)-debug $(SRCS)
+	$(CC) $(HM_CFLAGS) $(INC) -fPIC -o $(BIN)-debug $(SRCS) $(URING_LIBS)
 
 # portable static-ish build for release artifacts (no -march=native/lto)
 portable: HM_CFLAGS := $(HARD_CFLAGS) -O2 -fPIE -pthread -static
