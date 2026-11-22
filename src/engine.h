@@ -96,7 +96,8 @@ int hm_parse_bcrypt_target(const char *hash, hm_target_t *tg, char salt[48]);
 /* does the string look like a bcrypt hash? */
 int hm_is_bcrypt_hash(const char *s);
 
-/* load targets from a hash file (one md5 hex per line, '#' comments) */
+/* load targets from a hash file (one md5 hex, sha256 hex or bcrypt hash per
+ * line, '#' comments) */
 int hm_load_targets(const char *path, hm_target_t *targets, int *nt);
 
 #endif /* HM_ENGINE_H */

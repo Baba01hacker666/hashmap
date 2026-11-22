@@ -464,10 +464,12 @@ int hm_mode_search(int argc, char **argv)
                 goto out;
             }
             for (int i = 0; i < nt; i++) {
-                memcpy(wants[nwants].bytes, tgs[i].bytes,
-                       strlen(tgs[i].hex) / 2);
-                memcpy(wants[nwants].hex, tgs[i].hex, strlen(tgs[i].hex) + 1);
-                wants[nwants].width = (int)(strlen(tgs[i].hex) / 2);
+                size_t hlen = strlen(tgs[i].hex);
+                int width = hm_is_bcrypt_hash(tgs[i].hex) ? 23 : (int)(hlen / 2);
+
+                memcpy(wants[nwants].bytes, tgs[i].bytes, (size_t)width);
+                memcpy(wants[nwants].hex, tgs[i].hex, hlen + 1);
+                wants[nwants].width = width;
                 wants[nwants].found = 0;
                 nwants++;
             }

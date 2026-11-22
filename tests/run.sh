@@ -456,6 +456,12 @@ printf 'password\nletmein\nabc123\n' > "$TMP/bc.txt"
 [ $? -eq 0 ] && ok "bcrypt: the wordlist finds the password" \
     || bad "bcrypt: the wordlist finds the password"
 
+# the same hash loaded from a file (-F) must work too
+printf '%s\n' "$BC_HASH" > "$TMP/bc-hashes.txt"
+"$BIN" wordlist -F "$TMP/bc-hashes.txt" -w "$TMP/bc.txt" >/dev/null 2>&1
+[ $? -eq 0 ] && ok "bcrypt: the wordlist finds the password from a hash file" \
+    || bad "bcrypt: the wordlist finds the password from a hash file"
+
 # a bcrypt map with a fixed salt, then a lookup in it
 "$BIN" map -o "$TMP/bc.hmmap" --wordlist "$TMP/bc.txt" --bcrypt \
     --salt "$BC_SALT" --bcrypt-cost 6 >/dev/null 2>&1

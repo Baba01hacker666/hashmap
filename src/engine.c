@@ -205,17 +205,24 @@ int hm_load_targets(const char *path, hm_target_t *targets, int *nt)
         nl = strpbrk(s, "\r\n");
         if (nl != NULL)
             *nl = '\0';
-        if (strlen(s) != 32 && strlen(s) != 64) {
-            fprintf(stderr,
-                    "[-] hash file line is not a 32 char (md5) or 64 char "
-                    "(sha256) hex string: '%s'\n",
-                    s);
-            fclose(f);
-            return -1;
-        }
-        if (hm_parse_target(s, &targets[*nt]) < 0) {
-            fclose(f);
-            return -1;
+        if (hm_is_bcrypt_hash(s)) {
+            if (hm_parse_bcrypt_target(s, &targets[*nt], NULL) < 0) {
+                fclose(f);
+                return -1;
+            }
+        } else {
+            if (strlen(s) != 32 && strlen(s) != 64) {
+                fprintf(stderr,
+                        "[-] hash file line is not a 32 char (md5), 64 char "
+                        "(sha256) hex string or a bcrypt hash: '%s'\n",
+                        s);
+                fclose(f);
+                return -1;
+            }
+            if (hm_parse_target(s, &targets[*nt]) < 0) {
+                fclose(f);
+                return -1;
+            }
         }
         (*nt)++;
     }
@@ -1595,8 +1602,25 @@ int hm_opts_common(int argc, char **argv, hm_cfg_t *cfg, bool want_targets)
                         "[-] -F/--hash-file is not valid in this mode\n");
                 return -1;
             }
-            if (hm_load_targets(hm_optarg, cfg->targets, &cfg->ntargets) < 0)
-                return -1;
+            {
+                int before = cfg->ntargets;
+                if (hm_load_targets(hm_optarg, cfg->targets, &cfg->ntargets) < 0)
+                    return -1;
+                for (int i = before; i < cfg->ntargets; i++) {
+                    if (hm_is_bcrypt_hash(cfg->targets[i].hex)) {
+                        char salt[48];
+                        if (hm_parse_bcrypt_target(cfg->targets[i].hex,
+                                                   &cfg->targets[i], salt) < 0)
+                            return -1;
+                        if (!cfg->use_bcrypt) {
+                            cfg->use_bcrypt = 1;
+                            snprintf(cfg->bcrypt_salt,
+                                     sizeof(cfg->bcrypt_salt), "%s", salt);
+                            bcrypt_target_found = true;
+                        }
+                    }
+                }
+            }
             break;
         case 'c':
             if (ncs >= (int)(sizeof(cs_specs) / sizeof(cs_specs[0]))) {
