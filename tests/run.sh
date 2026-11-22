@@ -44,13 +44,6 @@ sha256_of() {
         printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
     fi
 }
-sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha256sum | cut -d' ' -f1
-    else
-        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
-    fi
-}
 file_md5() {
     if command -v md5sum >/dev/null 2>&1; then
         md5sum "$1" | cut -d' ' -f1
@@ -562,6 +555,50 @@ if [ -x "$ARCH" ]; then
 else
     printf '  \033[33mSKIP\033[0m archive tests: ./hashmap-archive not built\n'
 fi
+
+
+# ------------------------------------------------------------------
+head_ "indexed multi-target matching"
+# ------------------------------------------------------------------
+A="$(md5_of 0)"; B="$(md5_of 1)"; C="$(md5_of 2)"; D="$(md5_of 3)"
+printf '0\n1\n2\n3\n' >"$TMP/multi-words.txt"
+"$BIN" brute -H "$A" -H "$A" -H "$B" -H "$C" -H "$D" -c digits \
+    --min 1 --max 1 -t 2 >"$TMP/multi-brute.txt" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/multi-brute.txt")" -eq 5 ] \
+    && ok "brute: indexed targets including duplicates" \
+    || bad "brute: indexed targets including duplicates"
+"$BIN" wordlist -H "$A" -H "$A" -H "$B" -H "$C" -H "$D" \
+    -w "$TMP/multi-words.txt" -t 2 >"$TMP/multi-wordlist.txt" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/multi-wordlist.txt")" -eq 5 ] \
+    && ok "wordlist: indexed targets including duplicates" \
+    || bad "wordlist: indexed targets including duplicates"
+
+# ------------------------------------------------------------------
+head_ "CPU and accelerator detection"
+# ------------------------------------------------------------------
+# the cpu mode reports the machine and the kernels picked for it
+out="$("$BIN" cpu 2>/dev/null)"
+echo "$out" | grep -q "^features:" && ok "cpu: features are reported" \
+    || bad "cpu: features are reported"
+echo "$out" | grep -qE "^kernels:  md5 (4|8|16)-lane" \
+    && ok "cpu: the md5 kernel width is reported" \
+    || bad "cpu: the md5 kernel width is reported"
+echo "$out" | grep -q "^tuned:" && ok "cpu: autotune reports a choice" \
+    || bad "cpu: autotune reports a choice"
+echo "$out" | grep -q "^accelerator backend: none" && ok "accelerator: backend availability is reported" \
+    || bad "accelerator: backend availability is reported"
+HM_CPU=off "$BIN" cpu | grep -q '^kernels:  md5 4-lane, sha256 4-lane' \
+    && ok "cpu: off selects baseline" || bad "cpu: off selects baseline"
+HM_CPU=avx2 "$BIN" cpu | grep -qE '^kernels:  md5 (4|8)-lane, sha256 (4|8)-lane' \
+    && ok "cpu: avx2 limits width" || bad "cpu: avx2 limits width"
+
+# every dispatch mode must still crack the same hash
+for mode in off avx2 avx512; do
+    HM_CPU=$mode "$BIN" brute -H 202cb962ac59075b964b07152d234b70 -c digits \
+        --min 3 --max 3 >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "cpu: HM_CPU=$mode cracks" \
+        || bad "cpu: HM_CPU=$mode cracks"
+done
 
 # ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"

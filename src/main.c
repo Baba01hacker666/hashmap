@@ -8,6 +8,8 @@
 #include <string.h>
 
 #include "engine.h"
+#include "cpu.h"
+#include "accelerator.h"
 #include "hashmap.h"
 #include "util.h"
 
@@ -26,6 +28,7 @@ void hm_usage_all(const char *prog)
         "  map      build a digest->plaintext map file  (resumable)\n"
         "  search   look hashes up inside a map file\n"
         "  wordlist match target hashes against a wordlist\n"
+        "  cpu      show CPU features and the kernels this run picked\n"
         "\n"
         "flags (same meaning in every mode):\n"
         "  -H, --hash <md5hex>      a hash value (repeatable)\n"
@@ -221,6 +224,12 @@ int main(int argc, char **argv)
     }
     const char *mode = argv[1];
 
+    if (strcmp(mode, "cpu") == 0) {
+        hm_cpu_report();
+        hm_tune_report();
+        hm_accelerator_report();
+        return 0;
+    }
     if (strcmp(mode, "-h") == 0 || strcmp(mode, "--help") == 0 ||
         strcmp(mode, "help") == 0) {
         hm_usage_all(hm_prog);

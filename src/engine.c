@@ -27,6 +27,7 @@
 #include "charset.h"
 #include "crypto.h"
 #include "hashmap.h"
+#include "match.h"
 #include "util.h"
 
 /* ------------------------------------------------------------------ */
@@ -37,6 +38,16 @@
 
 /* how often a worker publishes its progress to the shared counter */
 #define HM_PROGRESS_FLUSH 4096
+
+/* map-mode record buffer per worker: one write syscall per block instead of
+ * one per candidate */
+#define HM_REC_BUF (256u * 1024u)
+
+/* candidates hashed per batched compression round (SIMD lanes on x86-64:
+ * sixteen on AVX-512, eight on AVX2; the 16x entry points fall back by
+ * themselves and report how many lanes they actually consumed) */
+#define HM_MD5_LANES 16
+#define HM_SHA_LANES 16
 #define HM_MAX_SPANS_IN_STATE 1000000
 
 typedef struct {
@@ -47,6 +58,9 @@ typedef struct {
 } hm_queue_t;
 
 typedef struct {
+    uint8_t *rec;   /* map record buffer (map mode only)        */
+    size_t rec_used;
+    int rec_exit;   /* set when the buffer could not be flushed */
     _Atomic uint64_t cur_lo;    /* current span lo                    */
     _Atomic uint64_t cur_hi;    /* current span hi (exclusive)        */
     _Atomic uint64_t span_pos;  /* candidates done inside cur span    */
@@ -80,6 +94,22 @@ static hm_wslot_t *g_w;
 static pthread_mutex_t g_found_mtx = PTHREAD_MUTEX_INITIALIZER;
 static char *g_found_mask;
 static bool g_resumed;
+
+/* exact multi-target lookup for the brute fast path (see match.h). Built
+ * once over the digest bytes of the targets; the user pointer of entry i is
+ * &g_cfg->targets[i], so a hit maps straight back to the target. */
+static hm_match_t g_match;
+static bool g_match_ready;
+static uint8_t g_match_digests[HM_MATCH_MAX_TARGETS][32];
+static const void *g_match_user[HM_MATCH_MAX_TARGETS];
+
+/* One target's digest in the byte order of the compression state, so the hot
+ * loop can compare four (md5) or eight (sha256) words without serialising the
+ * digest at all. Gathered for every small target set; a larger set keeps to
+ * the indexed matcher. Big-endian digests (sha256) reverse each word. */
+#define HM_KEY_MAX 8
+static uint32_t g_key[HM_KEY_MAX];
+static uint32_t g_key_words;      /* 4 for md5, 8 for sha256; 0 = unused */
 
 /* wordlist source: the candidates come from a file instead of a charset
  * keyspace. The span ordinals are line numbers in that file. */
@@ -372,12 +402,32 @@ static void idx_to_digits(uint64_t idx, uint8_t *d, int L, int cslen)
     }
 }
 
+/* Set the continuation bit on every digit but the last one. The bytes of a
+ * candidate then form a valid UTF-8 sequence whose high bits mark the
+ * position of each digit, so a decode can test a whole byte against the
+ * charset with one comparison. odom_next keeps the mark intact because it
+ * carries into one byte at a time and never touches d[L-1]. */
+static void odom_arm(uint8_t *d, int L)
+{
+    for (int i = 0; i + 1 < L; i++)
+        d[i] = (uint8_t)(d[i] | 0x80u);
+}
+
+/* Advance the odometer. A digit is stored as its value in the low seven bits
+ * plus an optional 0x80 continuation mark (odom_arm sets it for the lane
+ * renderer); the mark is carried along by the increment, never derived here,
+ * so an unarmed digest stays a plain array of small indices. */
 static bool odom_next(uint8_t *d, int L, int cslen)
 {
     for (int i = L - 1; i >= 0; i--) {
-        if (++d[i] < cslen)
+        const unsigned hi = (unsigned)(d[i] & 0x80u);
+        const unsigned v = (unsigned)(d[i] & 0x7fu) + 1u;
+
+        if (v < (unsigned)cslen) {
+            d[i] = (uint8_t)(v | hi);
             return true;
-        d[i] = 0;
+        }
+        d[i] = 0; /* carry: this digit returns to zero, unmarked */
     }
     return false;
 }
@@ -1030,32 +1080,169 @@ static size_t wlist_line(size_t i, const char **out)
     return len;
 }
 
+
+/* Render the next eight candidates into the eight 64-byte blocks of one
+ * compression round. Digests handed in by odom_arm() carry a continuation
+ * bit on every digit but the last, and the digit is always the low seven
+ * bits, so one masked read per byte expands a whole candidate:
+ *
+ *     dst[kk] = cs[digs[kk] & 0x7f]
+ *
+ * That holds for the marked digits and for the unmarked last digit alike,
+ * so there is no per-candidate branch and no separate slow path. Returns
+ * the number of lanes filled; *end is set when the keyspace wrapped inside
+ * the batch (every lane is still a valid, distinct candidate). */
+static int render_lanes(int lanes, uint8_t blk[HM_MD5_LANES][64],
+                        uint8_t digs4[HM_MD5_LANES][HM_MAX_PWLEN],
+                        uint8_t *digs, int L, int cslen, const char *cs,
+                        int cand_off, uint64_t idx, uint64_t hi, bool *end)
+{
+    *end = false;
+    for (int n = 0; n < lanes; n++) {
+        uint8_t *dst = blk[n] + cand_off;
+
+        if (idx >= hi)
+            return n;
+        for (int kk = 0; kk < L; kk++) {
+            const uint8_t raw = digs[kk];
+            const uint8_t v = (uint8_t)(raw & 0x7fu);
+
+            dst[kk] = (uint8_t)cs[v];
+            digs4[n][kk] = v;
+        }
+        idx++;
+        if (!odom_next(digs, L, cslen)) {
+            *end = true;
+            return n + 1;
+        }
+    }
+    return lanes;
+}
+
 /* ------------------------------------------------------------------ */
 /* worker                                                              */
 /* ------------------------------------------------------------------ */
 
+/* Does this lane's state equal the single target, in native word order?
+ * The four (or eight) word compares are the whole check: two digests that
+ * agree on those words are byte-identical, so the answer is exact. */
+static bool lane_matches(const uint32_t *st)
+{
+    if (g_key_words == 4)
+        return st[0] == g_key[0] && st[1] == g_key[1] &&
+               st[2] == g_key[2] && st[3] == g_key[3];
+    return st[0] == g_key[0] && st[1] == g_key[1] && st[2] == g_key[2] &&
+           st[3] == g_key[3] && st[4] == g_key[4] && st[5] == g_key[5] &&
+           st[6] == g_key[6] && st[7] == g_key[7];
+}
+
+/* Write the state words as digest bytes: md5 prints them little-endian,
+ * sha256 big-endian. */
+static void dg_serialize(uint8_t *out, const uint32_t *st, int nwords, bool big)
+{
+    for (int i = 0; i < nwords; i++) {
+        if (big) {
+            out[4 * i] = (uint8_t)(st[i] >> 24);
+            out[4 * i + 1] = (uint8_t)(st[i] >> 16);
+            out[4 * i + 2] = (uint8_t)(st[i] >> 8);
+            out[4 * i + 3] = (uint8_t)st[i];
+        } else {
+            out[4 * i] = (uint8_t)st[i];
+            out[4 * i + 1] = (uint8_t)(st[i] >> 8);
+            out[4 * i + 2] = (uint8_t)(st[i] >> 16);
+            out[4 * i + 3] = (uint8_t)(st[i] >> 24);
+        }
+    }
+}
+
+/* Exact target lookup for one digest. The matcher answers it with a bounded
+ * number of probes instead of a scan of every target; a target that is
+ * already found is skipped, so long runs stop paying for finished hashes.
+ * The returned pointer is always one of g_cfg->targets, or NULL. */
 static const hm_target_t *find_hit(const uint8_t *dg)
 {
-    for (int i = 0; i < g_cfg->ntargets; i++) {
-        if (memcmp(dg, g_cfg->targets[i].bytes, (size_t)g_cfg->digest_len) == 0)
-            return &g_cfg->targets[i];
+    unsigned hits[HM_MATCH_MAX_TARGETS];
+    unsigned n;
+
+    if (!g_match_ready) {
+        for (int i = 0; i < g_cfg->ntargets; i++) {
+            if (memcmp(dg, g_cfg->targets[i].bytes,
+                       (size_t)g_cfg->digest_len) == 0)
+                return &g_cfg->targets[i];
+        }
+        return NULL;
+    }
+    n = hm_match(&g_match, dg, hits);
+    for (unsigned k = 0; k < n; k++) {
+        const hm_target_t *tg = (const hm_target_t *)g_match.user[hits[k]];
+
+        return tg;
     }
     return NULL;
 }
 
+/* Build the matcher over the targets. It is indexed by digest bytes, so it
+ * serves every width and every algorithm; only very small target sets are
+ * cheaper to scan (a handful of memcmps). */
+#define HM_MATCH_MIN_TARGETS 4
+
+static void match_build(void)
+{
+    g_match_ready = false;
+    /* single digest: gather it into state-word order for the direct compare */
+    g_key_words = 0;
+    if (g_cfg->ntargets == 1 &&
+        ((g_cfg->algo == HM_ALG_MD5 && g_cfg->digest_len == 16) ||
+         (g_cfg->algo == HM_ALG_SHA256 && g_cfg->digest_len == 32))) {
+        const uint8_t *d = g_cfg->targets[0].bytes;
+        const int w = (g_cfg->algo == HM_ALG_MD5) ? 4 : 8;
+
+        for (int i = 0; i < w; i++) {
+            if (g_cfg->algo == HM_ALG_MD5)
+                g_key[i] = (uint32_t)d[4 * i] | ((uint32_t)d[4 * i + 1] << 8) |
+                           ((uint32_t)d[4 * i + 2] << 16) |
+                           ((uint32_t)d[4 * i + 3] << 24);
+            else
+                g_key[i] = ((uint32_t)d[4 * i] << 24) |
+                           ((uint32_t)d[4 * i + 1] << 16) |
+                           ((uint32_t)d[4 * i + 2] << 8) |
+                           (uint32_t)d[4 * i + 3];
+        }
+        g_key_words = (uint32_t)w;
+    }
+    if (g_cfg->ntargets < HM_MATCH_MIN_TARGETS ||
+        g_cfg->ntargets > HM_MATCH_MAX_TARGETS ||
+        g_cfg->digest_len < 1 || g_cfg->digest_len > 32)
+        return;
+    for (int i = 0; i < g_cfg->ntargets; i++) {
+        memcpy(g_match_digests[i], g_cfg->targets[i].bytes, 32);
+        g_match_user[i] = &g_cfg->targets[i];
+    }
+    if (hm_match_build(&g_match, g_match_digests, g_match_user,
+                       (unsigned)g_cfg->ntargets, (unsigned)g_cfg->digest_len)
+        == 0)
+        g_match_ready = true;
+
+
+}
+
+static void match_dispose(void)
+{
+    if (g_match_ready)
+        hm_match_free(&g_match);
+    g_match_ready = false;
+}
+
 static void report_found(const hm_target_t *tg, const char *plain, int L)
 {
-    int idx = -1;
     bool all;
     bool first = false;
 
-    for (int i = 0; i < g_cfg->ntargets; i++) {
-        if (strcmp(g_cfg->targets[i].hex, tg->hex) == 0)
-            idx = i;
-    }
     pthread_mutex_lock(&g_found_mtx);
-    if (idx >= 0 && g_found_mask[idx] == 0) {
-        g_found_mask[idx] = 1;
+    for (int i = 0; i < g_cfg->ntargets; i++) {
+        if (g_found_mask[i] != 0 || strcmp(g_cfg->targets[i].hex, tg->hex) != 0)
+            continue;
+        g_found_mask[i] = 1;
         printf("[+] CRACKED  %s  ->  %s  (len %d)\n", tg->hex, plain, L);
         if (g_cfg->outf != NULL) {
             fprintf(g_cfg->outf, "%s:%s\n", tg->hex, plain);
@@ -1070,19 +1257,47 @@ static void report_found(const hm_target_t *tg, const char *plain, int L)
         atomic_store(&hm_stop, 1);
 }
 
-static void map_record_write(const uint8_t *dg, const char *plain, int plen)
+/* append one record to the worker's buffer, flushing whole blocks */
+static void map_record_write(hm_wslot_t *w, const uint8_t *dg, const char *plain,
+                             int plen)
 {
     uint8_t rec[HM_MAX_PLAIN + 33];
     size_t dlen = (size_t)g_cfg->map_dlen;
+    size_t n = dlen + 1 + (size_t)plen;
 
     memcpy(rec, dg, dlen);
     rec[dlen] = (uint8_t)plen;
     memcpy(rec + dlen + 1, plain, (size_t)plen);
-    if (fwrite(rec, 1, dlen + 1 + (size_t)plen, g_cfg->rec) !=
-        dlen + 1 + (size_t)plen) {
+    if (w->rec == NULL || w->rec_used + n > HM_REC_BUF) {
+        if (w->rec == NULL) {
+            w->rec = malloc(HM_REC_BUF);
+            if (w->rec == NULL) {
+                fprintf(stderr, "[-] out of memory (map buffer)\n");
+                exit(1);
+            }
+        }
+        if (w->rec_used > 0 &&
+            fwrite(w->rec, 1, w->rec_used, g_cfg->rec) != w->rec_used) {
+            fprintf(stderr, "[-] map stream write failed: %s\n",
+                    strerror(errno));
+            exit(1);
+        }
+        w->rec_used = 0;
+    }
+    memcpy(w->rec + w->rec_used, rec, n);
+    w->rec_used += n;
+}
+
+/* flush what a worker still holds (must run before the file is closed) */
+static void map_record_flush(hm_wslot_t *w)
+{
+    if (w->rec != NULL && w->rec_used > 0 &&
+        fwrite(w->rec, 1, w->rec_used, g_cfg->rec) != w->rec_used) {
         fprintf(stderr, "[-] map stream write failed: %s\n", strerror(errno));
         exit(1);
     }
+    if (w->rec != NULL)
+        w->rec_used = 0;
 }
 
 static void record_stop_tail(hm_wslot_t *me, int L, uint64_t lo, uint64_t hi,
@@ -1098,11 +1313,11 @@ static void record_stop_tail(hm_wslot_t *me, int L, uint64_t lo, uint64_t hi,
 static void *worker(void *arg)
 {
     intptr_t tid = (intptr_t)arg;
+    hm_wslot_t *me = &g_w[tid];
     const int pre_len = g_cfg->salt_pre ? g_cfg->salt_len : 0;
     const int post_len = g_cfg->salt_pre ? 0 : g_cfg->salt_len;
     const char *cs = g_cfg->cs;
     const bool pre = g_cfg->salt_pre != 0;
-    hm_wslot_t *me = &g_w[tid];
     uint8_t digs[HM_MAX_PWLEN];
     uint8_t dg[32];
     char plain[HM_MAX_PLAIN];
@@ -1147,71 +1362,182 @@ static void *worker(void *arg)
                 memcpy(plain + pre_len + L, g_cfg->salt, (size_t)post_len);
 
             idx = lo;
+
             if (g_wmode)
                 idx_to_digits(0, digs, 0, 1); /* unused in wordlist mode */
             if (!g_wmode && !g_cfg->use_bcrypt &&
                 g_cfg->algo == HM_ALG_MD5 && ctx.fast) {
-                /* Four candidates per compression round. The MD5 chains of
-                 * separate candidates are independent, so the core can
-                 * overlap them instead of waiting on one dependency chain. */
-                uint8_t blk[4][64];
+                /* HM_MD5_LANES candidates per compression round. The MD5
+                 * chains of separate candidates are independent, so the core
+                 * can overlap them instead of waiting on one dependency
+                 * chain; with AVX2 the lanes are run in vector registers. */
+                uint8_t blk[HM_MD5_LANES][64];
 
-                for (int l = 0; l < 4; l++)
+                /* the lane renderer reads the odometer through the marks */
+                odom_arm(digs, L);
+                for (int l = 0; l < HM_MD5_LANES; l++)
                     memcpy(blk[l], ctx.blk, sizeof(ctx.blk));
                 while (idx < hi) {
-                    uint8_t digs4[4][HM_MAX_PWLEN];
-                    uint32_t st[4][4];
-                    int n = 0;
-                    bool end = false;
+                    uint8_t digs4[HM_MD5_LANES][HM_MAX_PWLEN];
+                    uint32_t st[HM_MD5_LANES][4];
+                    int n;
+                    bool end;
 
                     if (atomic_load(&hm_stop) != 0)
                         goto stop_span;
-                    while (n < 4 && idx < hi) {
-                        for (int kk = 0; kk < L; kk++)
-                            blk[n][ctx.cand_off + kk] =
-                                (uint8_t)cs[digs[kk]];
-                        memcpy(digs4[n], digs, (size_t)L);
-                        memcpy(st[n], ctx.base, sizeof(ctx.base));
-                        n++;
-                        idx++;
-                        if (!odom_next(digs, L, g_cfg->cslen)) {
-                            end = true; /* keyspace wrapped */
-                            break;
-                        }
-                    }
-                    if (n == 4)
+                    n = render_lanes(HM_MD5_LANES, blk, digs4, digs, L,
+                                     g_cfg->cslen, cs, ctx.cand_off, idx, hi,
+                                     &end);
+                    idx += (uint64_t)n;
+                    for (int l = 0; l < n; l++)
+                        memcpy(st[l], ctx.base, sizeof(ctx.base));
+                    if (n == HM_MD5_LANES) {
+                        hm_md5_transform16x(st, (const uint8_t (*)[64])blk);
+                    } else if (n == 8) {
+                        hm_md5_transform8x(st, (const uint8_t (*)[64])blk);
+                    } else if (n == 4) {
                         hm_md5_transform4(st, (const uint8_t (*)[64])blk);
-                    else
+                    } else {
                         for (int l = 0; l < n; l++)
                             hm_md5_transform(st[l], blk[l]);
+                    }
                     for (int l = 0; l < n; l++) {
-                        for (int i = 0; i < 4; i++) {
-                            dg[4 * i] = (uint8_t)(st[l][i]);
-                            dg[4 * i + 1] = (uint8_t)(st[l][i] >> 8);
-                            dg[4 * i + 2] = (uint8_t)(st[l][i] >> 16);
-                            dg[4 * i + 3] = (uint8_t)(st[l][i] >> 24);
+                        const hm_target_t *hit = NULL;
+
+                        /* only a hit needs the digest as bytes: for the
+                         * single-target case the four state words decide it */
+                        if (g_cfg->rec == NULL && g_key_words == 4) {
+                            if (lane_matches(st[l])) {
+                                dg_serialize(dg, st[l], 4, false);
+                                hit = &g_cfg->targets[0];
+                            }
+                        } else if (g_cfg->rec == NULL) {
+                            dg_serialize(dg, st[l], 4, false);
+                            hit = find_hit(dg);
                         }
                         if (g_cfg->rec != NULL) {
                             int plen = pre_len + L + post_len;
 
+                            dg_serialize(dg, st[l], 4, false);
                             for (int kk = 0; kk < L; kk++)
                                 plain[pre_len + kk] = cs[digs4[l][kk]];
-                            map_record_write(dg, plain, plen);
-                        } else {
-                            const hm_target_t *hit = find_hit(dg);
+                            map_record_write(me, dg, plain, plen);
+                        } else if (hit != NULL) {
+                            char found[HM_MAX_PLAIN];
 
-                            if (hit != NULL) {
-                                char found[HM_MAX_PLAIN];
+                            memcpy(found, plain,
+                                   (size_t)(pre_len + L + post_len));
+                            for (int kk = 0; kk < L; kk++)
+                                found[pre_len + kk] = cs[digs4[l][kk]];
+                            found[pre_len + L + post_len] = '\0';
+                            report_found(hit, found, L);
+                            if (atomic_load(&hm_stop) != 0)
+                                goto stop_span;
+                        }
+                    }
+                    done = idx - lo;
+                    {
+                        uint64_t aligned =
+                            done & ~(uint64_t)(HM_PROGRESS_FLUSH - 1);
 
-                                memcpy(found, plain,
-                                       (size_t)(pre_len + L + post_len));
-                                for (int kk = 0; kk < L; kk++)
-                                    found[pre_len + kk] = cs[digs4[l][kk]];
-                                found[pre_len + L + post_len] = '\0';
-                                report_found(hit, found, L);
-                                if (atomic_load(&hm_stop) != 0)
-                                    goto stop_span;
+                        if (aligned > flushed) {
+                            atomic_fetch_add(&g_done_len[L],
+                                             aligned - flushed);
+                            flushed = aligned;
+                        }
+                    }
+                    if (end)
+                        break;
+                }
+                atomic_fetch_add(&g_done_len[L], (hi - lo) - flushed);
+                continue;
+            }
+            if (!g_wmode && !g_cfg->use_bcrypt &&
+                g_cfg->algo == HM_ALG_SHA256 &&
+                pre_len + L + post_len <= 55) {
+                /* Same lane trick for SHA-256: sixteen independent one-block
+                 * candidates per compression round. The template carries the
+                 * SHA-256 padding (0x80, then the 64-bit *big-endian* length),
+                 * so a lane only needs its candidate bytes. This is the
+                 * difference between ~2.6 and ~26 M candidates/s per core. */
+                uint8_t tmpl[64];
+                uint8_t blk[HM_SHA_LANES][64];
+                const int total = pre_len + L + post_len;
+
+                memset(tmpl, 0, sizeof(tmpl));
+                if (pre_len > 0)
+                    memcpy(tmpl, g_cfg->salt, (size_t)pre_len);
+                if (post_len > 0)
+                    memcpy(tmpl + pre_len + L, g_cfg->salt, (size_t)post_len);
+                tmpl[total] = 0x80;
+                {
+                    uint64_t bits = (uint64_t)total * 8;
+
+                    for (int i = 0; i < 8; i++)
+                        tmpl[56 + i] = (uint8_t)(bits >> (56 - 8 * i));
+                }
+                for (int l = 0; l < HM_SHA_LANES; l++)
+                    memcpy(blk[l], tmpl, sizeof(tmpl));
+                while (idx < hi) {
+                    uint8_t digs4[HM_SHA_LANES][HM_MAX_PWLEN];
+                    uint32_t st[HM_SHA_LANES][8];
+                    int n = 0;
+                    int lanes = 0;
+                    bool end = false;
+
+                    if (atomic_load(&hm_stop) != 0)
+                        goto stop_span;
+                    while (n < HM_SHA_LANES && idx < hi) {
+                        for (int kk = 0; kk < L; kk++)
+                            blk[n][pre_len + kk] = (uint8_t)cs[digs[kk]];
+
+                        memcpy(digs4[n], digs, (size_t)L);
+                        memcpy(st[n], HM_SHA256_H0, sizeof(HM_SHA256_H0));
+                        n++;
+                        idx++;
+                        if (!odom_next(digs, L, g_cfg->cslen)) {
+                            end = true;
+                            break;
+                        }
+                    }
+                    /* lanes beyond n re-hash an earlier candidate, so the
+                     * vector round always runs on full registers */
+                    lanes = n;
+                    for (int l = lanes; l < HM_SHA_LANES && l > 0; l++) {
+                        memcpy(st[l], st[l - 1], sizeof(st[0]));
+                        memcpy(blk[l], blk[l - 1], sizeof(blk[0]));
+                    }
+                    hm_sha256_transform16x(st, (const uint8_t (*)[64])blk);
+                    for (int l = 0; l < lanes; l++) {
+                        const hm_target_t *hit = NULL;
+
+                        if (g_cfg->rec == NULL && g_key_words == 8) {
+                            if (lane_matches(st[l])) {
+                                dg_serialize(dg, st[l], 8, true);
+                                hit = &g_cfg->targets[0];
                             }
+                        } else if (g_cfg->rec == NULL) {
+                            dg_serialize(dg, st[l], 8, true);
+                            hit = find_hit(dg);
+                        }
+                        if (g_cfg->rec != NULL) {
+                            int plen = pre_len + L + post_len;
+
+                            dg_serialize(dg, st[l], 8, true);
+                            for (int kk = 0; kk < L; kk++)
+                                plain[pre_len + kk] = cs[digs4[l][kk]];
+                            map_record_write(me, dg, plain, plen);
+                        } else if (hit != NULL) {
+                            char found[HM_MAX_PLAIN];
+
+                            memcpy(found, plain,
+                                   (size_t)(pre_len + L + post_len));
+                            for (int kk = 0; kk < L; kk++)
+                                found[pre_len + kk] = cs[digs4[l][kk]];
+                            found[pre_len + L + post_len] = '\0';
+                            report_found(hit, found, L);
+                            if (atomic_load(&hm_stop) != 0)
+                                goto stop_span;
                         }
                     }
                     done = idx - lo;
@@ -1248,27 +1574,15 @@ static void *worker(void *arg)
                 }
                 if (g_wmode) {
                     /* the map record holds the wordlist candidate */
-                    uint8_t rec[HM_MAX_PLAIN + 33];
-                    size_t plen = linelen;
-                    size_t dlen = (size_t)g_cfg->map_dlen;
-
-                    if (plen > HM_MAX_PLAIN)
+                    if (linelen > HM_MAX_PLAIN)
                         continue; /* too long for a record: skip it */
-                    memcpy(rec, dg, dlen);
-                    rec[dlen] = (uint8_t)plen;
-                    memcpy(rec + dlen + 1, line, plen);
-                    if (fwrite(rec, 1, dlen + 1 + (size_t)plen, g_cfg->rec) !=
-                        dlen + 1 + (size_t)plen) {
-                        fprintf(stderr, "[-] map stream write failed: %s\n",
-                                strerror(errno));
-                        exit(1);
-                    }
+                    map_record_write(me, dg, line, (int)linelen);
                 } else if (g_cfg->rec != NULL) {
                     int plen = pre_len + L + post_len;
 
                     for (int kk = 0; kk < L; kk++)
                         plain[pre_len + kk] = cs[digs[kk]];
-                    map_record_write(dg, plain, plen);
+                    map_record_write(me, dg, plain, plen);
                 } else {
                     const hm_target_t *hit = find_hit(dg);
 
@@ -1307,6 +1621,8 @@ stop_span:
         }
     }
 worker_exit:
+    if (g_cfg->rec != NULL)
+        map_record_flush(me);
     atomic_store(&me->exited, 1);
     atomic_fetch_add(&g_workers_done, 1);
     return NULL;
@@ -1379,6 +1695,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
         free(g_w);
         return -1;
     }
+    match_build();
 
     /* wordlist source: the candidates are the lines of a file */
     g_wmode = (cfg->wlist != NULL && cfg->wlist[0] != '\0');
@@ -1518,8 +1835,11 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
             printf("[-] failed removing state: %s\n", strerror(errno));
     }
 
+    for (int t = 0; t < cfg->nthreads; t++)
+        free(g_w[t].rec);
     queues_free_all();
     wlist_free();
+    match_dispose();
     free(tids);
     free(g_found_mask);
     free(g_w);

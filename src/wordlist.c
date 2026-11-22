@@ -19,6 +19,7 @@
 #include "engine.h"
 #include "hashmap.h"
 #include "iouring.h"
+#include "match.h"
 #include "util.h"
 
 #define HM_WL_MAX_TARGETS 4096
@@ -28,7 +29,7 @@ typedef struct {
     uint8_t bytes[32];
     char hex[65];
     char salt[48]; /* the bcrypt setting of this hash */
-    int found;
+    _Atomic int found;
 } wl_target_t;
 
 typedef struct {
@@ -46,11 +47,19 @@ typedef struct {
     _Atomic size_t next;   /* next line block to take */
     _Atomic int stop;      /* stop flag */
     _Atomic int nfound;
+    int dlen; /* digest bytes compared per candidate */
     FILE *outf;
     pthread_mutex_t mtx;
 } wl_ctx_t;
 
 static wl_ctx_t g_wl;
+
+/* exact multi-target lookup (see match.h): one probe per candidate instead of
+ * a memcmp per target, which is what the 4096-target runs need */
+static hm_match_t g_wl_match;
+static bool g_wl_match_ready;
+static uint8_t g_wl_match_digests[HM_MATCH_MAX_TARGETS][32];
+static const void *g_wl_match_user[HM_MATCH_MAX_TARGETS];
 
 /* hash one candidate (with salt) */
 static void wl_hash(const char *line, size_t len, uint8_t *out,
@@ -162,31 +171,57 @@ static int wl_sha256_block(const char *line, size_t len, uint8_t blk[64])
     return 0;
 }
 
+static int wl_hit_one(int t, const char *plain, size_t len);
+
 static int wl_hit(const uint8_t *dg, size_t dlen, const char *plain, size_t len)
 {
-    for (int t = 0; t < g_wl.ntargets; t++) {
-        if (g_wl.targets[t].found)
-            continue;
-        if (memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
-            continue;
-        pthread_mutex_lock(&g_wl.mtx);
-        if (!g_wl.targets[t].found) {
-            char out[HM_MAX_PLAIN + 1];
+    /* The index is built for the width this run hashes to (the algorithm is
+     * derived from the hash length, so that width is known before the
+     * workers start). It replaces the per-target memcmp scan. */
+    if (g_wl_match_ready && (int)dlen == g_wl.dlen) {
+        unsigned hits[HM_MATCH_MAX_TARGETS];
+        unsigned n = hm_match(&g_wl_match, dg, hits);
+        int any = 0;
 
-            memcpy(out, plain, len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len);
-            out[len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len] = '\0';
-            g_wl.targets[t].found = 1;
-            printf("[+] CRACKED  %s  ->  %s\n", g_wl.targets[t].hex, out);
-            if (g_wl.outf != NULL) {
-                fprintf(g_wl.outf, "%s:%s\n", g_wl.targets[t].hex, out);
-                fflush(g_wl.outf);
-            }
-            atomic_fetch_add(&g_wl.nfound, 1);
+        for (unsigned k = 0; k < n; k++) {
+            int t = (int)((const wl_target_t *)g_wl_match_user[hits[k]] -
+                          g_wl.targets);
+
+            if (!g_wl.targets[t].found)
+                any |= wl_hit_one(t, plain, len);
         }
-        pthread_mutex_unlock(&g_wl.mtx);
-        return 1;
+        return any;
     }
-    return 0;
+    int any = 0;
+    for (int t = 0; t < g_wl.ntargets; t++) {
+        if (g_wl.targets[t].found || memcmp(g_wl.targets[t].bytes, dg, dlen) != 0)
+            continue;
+        any |= wl_hit_one(t, plain, len);
+    }
+    return any;
+}
+
+/* the single-target compare-and-report body of wl_hit */
+static int wl_hit_one(int t, const char *plain, size_t len)
+{
+    if (g_wl.targets[t].found)
+        return 0;
+    pthread_mutex_lock(&g_wl.mtx);
+    if (!g_wl.targets[t].found) {
+        char out[HM_MAX_PLAIN + 1];
+
+        memcpy(out, plain, len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len);
+        out[len > HM_MAX_PLAIN ? HM_MAX_PLAIN : len] = '\0';
+        g_wl.targets[t].found = 1;
+        printf("[+] CRACKED  %s  ->  %s\n", g_wl.targets[t].hex, out);
+        if (g_wl.outf != NULL) {
+            fprintf(g_wl.outf, "%s:%s\n", g_wl.targets[t].hex, out);
+            fflush(g_wl.outf);
+        }
+        atomic_fetch_add(&g_wl.nfound, 1);
+    }
+    pthread_mutex_unlock(&g_wl.mtx);
+    return 1;
 }
 
 static void *wl_worker(void *arg)
@@ -308,8 +343,8 @@ static void *wl_worker(void *arg)
                             continue;
                         wl_hash(g_wl.data + offs[l], lens[l], dg,
                                 g_wl.targets[t].salt);
-                        if (wl_hit(dg, 23, g_wl.data + offs[l], lens[l]))
-                            break;
+                        if (memcmp(g_wl.targets[t].bytes, dg, 23) == 0)
+                            (void)wl_hit_one(t, g_wl.data + offs[l], lens[l]);
                     }
                 }
                 continue;
@@ -619,6 +654,30 @@ int hm_mode_wordlist(int argc, char **argv)
     }
     g_wl.algo = algo;
     g_wl.use_bcrypt = use_bcrypt;
+    g_wl.dlen = use_bcrypt ? 23 : (int)hm_algo_size(algo);
+
+    /* index the targets for the digest width the run will produce: a handful
+     * of memcmps is fine, a few hundred is not */
+    g_wl_match_ready = false;
+    {
+        int width = 0;
+
+        if (use_bcrypt) {
+            width = 23;
+        } else if (ntargets > 0) {
+            width = (int)hm_algo_size(algo);
+        }
+        if (!use_bcrypt && ntargets >= 4 && ntargets <= HM_MATCH_MAX_TARGETS &&
+            width > 0) {
+            for (int i = 0; i < ntargets; i++) {
+                memcpy(g_wl_match_digests[i], targets[i].bytes, 32);
+                g_wl_match_user[i] = &targets[i];
+            }
+            if (hm_match_build(&g_wl_match, g_wl_match_digests, g_wl_match_user,
+                               (unsigned)ntargets, (unsigned)width) == 0)
+                g_wl_match_ready = true;
+        }
+    }
 
     g_wl.targets = targets;
     g_wl.ntargets = ntargets;
@@ -673,6 +732,10 @@ out:
         for (int i = 0; i < nthreads; i++)
             (void)tids[i];
         free(tids);
+    }
+    if (g_wl_match_ready) {
+        hm_match_free(&g_wl_match);
+        g_wl_match_ready = false;
     }
     if (g_wl.outf != NULL)
         fclose(g_wl.outf);

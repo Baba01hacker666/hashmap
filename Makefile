@@ -3,7 +3,7 @@
 # MIT License - Copyright (c) 2026 baba01hacker666
 
 CC      ?= cc
-MODULES  := util charset crypto bcrypt engine brute digest map search wordlist hmar iouring main
+MODULES  := util charset cpu accelerator crypto bcrypt match engine brute digest map search wordlist hmar iouring main
 SRCS     := $(MODULES:%=src/%.c)
 OBJS     := $(SRCS:.c=.o)
 DEPS     := $(OBJS:.o=.d)
@@ -13,7 +13,7 @@ HARD_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
                -Wshadow -Wcast-align -Wstrict-prototypes \
                -Wmissing-prototypes -Wundef -Wformat=2 \
                -Wdouble-promotion -Wconversion -Wsign-conversion
-OPT_FAST := -O3 -march=native -flto -pthread -D_FORTIFY_SOURCE=2
+OPT_FAST := -O3 -flto -pthread -D_FORTIFY_SOURCE=2
 INC := -Isrc
 URING_LIBS :=
 
@@ -46,7 +46,15 @@ portable: HM_CFLAGS := $(HARD_CFLAGS) -O2 -fPIE -pthread -static
 portable: $(SRCS)
 	$(CC) $(HM_CFLAGS) $(INC) -o $(BIN)-portable $(SRCS)
 
-test: $(BIN)
+build/core-test: tests/core.c src/crypto.o src/cpu.o src/util.o src/match.o
+	mkdir -p build
+	$(CC) $(HARD_CFLAGS) $(INC) -O2 -pthread -o $@ $^
+
+test: $(BIN) build/core-test
+	@./build/core-test
+	@HM_CPU=off ./build/core-test
+	@HM_CPU=avx2 ./build/core-test
+	@HM_CPU=avx512 ./build/core-test
 	@./tests/run.sh
 
 # Optional archive companion: a relocatable Python 3.10+ standard-library zipapp.
