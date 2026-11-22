@@ -84,27 +84,36 @@ jobs:
 
       - name: Collect the hashes
         id: collect
+        env:
+          HASHES_INPUT: ${{ inputs.hashes }}
         run: |
           set -eu
           mkdir -p "$FARM_DIR"
           : > "$FARM_DIR/hashes.txt"
-          if [ -n "${{ inputs.hashes }}" ]; then
-            # one hash per line: 32 hex = md5, 64 hex = sha256
-            printf '%s\n' "${{ inputs.hashes }}" \
-                | awk '{ gsub(/[^0-9a-fA-F]/, ""); n = length($0);
-                        if (n == 32 || n == 64) print tolower($0) }' \
-                >> "$FARM_DIR/hashes.txt" || true
+          # Always go through an env var: a bcrypt hash starts with $2b$, and
+          # inlining the input into the shell script makes bash try to expand
+          # $2 as a positional parameter ("$2: unbound variable").
+          printf '%s\n' "$HASHES_INPUT" > "$FARM_DIR/input.txt"
+          if [ -s "$FARM_DIR/input.txt" ]; then
+            awk '/^\$2[aby]\$[0-9][0-9]\$[.\/A-Za-z0-9]{53}$/ { print; next }
+                 { gsub(/[^0-9a-fA-F]/, ""); n = length($0);
+                   if (n == 32 || n == 64) print tolower($0) }' \
+                "$FARM_DIR/input.txt" >> "$FARM_DIR/hashes.txt" || true
           fi
           if [ -n "${{ inputs.hash_file }}" ] && [ -f "${{ inputs.hash_file }}" ]; then
-            awk '{ gsub(/[^0-9a-fA-F]/, ""); n = length($0);
-                    if (n == 32 || n == 64) print tolower($0) }' \
+            awk '/^\$2[aby]\$[0-9][0-9]\$[.\/A-Za-z0-9]{53}$/ { print; next }
+                 { gsub(/[^0-9a-fA-F]/, ""); n = length($0);
+                   if (n == 32 || n == 64) print tolower($0) }' \
                 "${{ inputs.hash_file }}" >> "$FARM_DIR/hashes.txt" || true
           fi
-          sort -u "$FARM_DIR/hashes.txt" | grep -E '[0-9a-f]{32}' \
+          sort -u "$FARM_DIR/hashes.txt" \
+              | grep -E '^([0-9a-f]{32}|[0-9a-f]{64}|\$2[aby]\$[0-9][0-9]\$)' \
               > "$FARM_DIR/hashes.tmp" || true
           mv "$FARM_DIR/hashes.tmp" "$FARM_DIR/hashes.txt"
           total=$(wc -l < "$FARM_DIR/hashes.txt" | tr -d ' ')
+          hextotal=$(grep -cE '^[0-9a-f]{32}$|^[0-9a-f]{64}$' "$FARM_DIR/hashes.txt" || true)
           echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "hextotal=$hextotal" >> "$GITHUB_OUTPUT"
           echo "hashes:"; cat "$FARM_DIR/hashes.txt"
           if [ "$total" -eq 0 ]; then
             echo "::notice::no hashes to look up"
@@ -218,7 +227,7 @@ jobs:
 
       - name: Stage 3 - brute force fallback
         id: stage_brute
-        if: steps.stage_wordlist.outputs.remaining != '0'
+        if: steps.stage_wordlist.outputs.remaining != '0' && steps.collect.outputs.hextotal != '0'
         run: |
           set -eu
           extra=""
