@@ -28,7 +28,7 @@ typedef struct {
     char vendor[13];    /* "GenuineIntel", "AuthenticAMD", ...            */
     char brand[49];     /* the brand string, or "" when CPUID has none    */
     unsigned family, model, stepping;
-    unsigned logical;   /* logical CPUs usable by this process            */
+    unsigned logical;   /* online logical processors (not affinity-limited) */
 
     /* baseline x86-64 (v1) */
     bool sse2, sse42, popcnt, aes, pclmul;
@@ -40,7 +40,7 @@ typedef struct {
     bool sha_ni;        /* Intel SHA extensions (SHA-1 and SHA-256)        */
     bool bmi2, adx;
 
-    /* what the run will actually use */
+    /* pre-autotune maximum widths; see hm_autotune() for selected widths */
     int md5_lanes;      /* 16 (avx512), 8 (avx2), 4 (baseline multi)      */
     int sha256_lanes;
     bool use_sha_ni;    /* false: SHA-NI kernel is not implemented        */
@@ -49,8 +49,8 @@ typedef struct {
 /* Detect once (thread-safe, idempotent) and return the cached result. */
 const hm_cpu_t *hm_cpu(void);
 
-/* True when the run uses at least `bits` vector bits for the compression
- * kernels (128, 256 or 512). */
+/* True when the pre-autotune choice permits at least `bits` vector bits
+ * (128, 256 or 512). Consult hm_autotune() for the selected widths. */
 bool hm_cpu_has_vector(unsigned bits);
 
 /* A short human-readable list of the interesting features, e.g.

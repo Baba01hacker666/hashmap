@@ -2,6 +2,8 @@
 
 Run `hashmap cpu` to print the processor identity, CPU features, selected
 batched MD5 and SHA-256 kernels, and a best-effort Linux accelerator report.
+The logical processor count is the system online count, which can exceed a
+process affinity limit.
 `src/cpu.c` owns detection and runtime selection; `src/accelerator.c` inspects
 visible accelerator devices. The standard build does not use `-march=native`,
 so optional x86 SIMD kernels are selected at runtime rather than assumed for

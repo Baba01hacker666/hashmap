@@ -110,7 +110,7 @@ int hm_cpu_count(void)
     if (n > 0)
         return (int)n;
 #endif
-    return 4;
+    return 1;
 #endif
 }
 

@@ -1087,7 +1087,7 @@ void hm_sha256_transform16x(uint32_t st[16][8], const uint8_t blk[16][64])
 #if defined(HM_HAVE_AVX2_LANES)
 static int hm_cpu_avx2(void)
 {
-    return hm_cpu_has_vector(256) ? 1 : 0;
+    return (hm_cpu()->avx2 && hm_cpu_has_vector(256)) ? 1 : 0;
 }
 #endif /* HM_HAVE_AVX2_LANES */
 

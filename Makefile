@@ -116,7 +116,7 @@ install-hooks:
 	@echo "hooks enabled: Co-Authored-By trailers are now blocked"
 
 clean:
-	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable hashmap-archive
+	rm -f $(OBJS) $(DEPS) $(BIN) $(BIN)-debug $(BIN)-portable hashmap-archive build/core-test
 	rm -rf $(ARCHIVE_BUILD)
 
 -include $(DEPS)

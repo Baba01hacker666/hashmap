@@ -46,22 +46,24 @@ jobs:
           # Misses intentionally return 1; preserve real errors instead of
           # letting pipefail fail on a successful exhaustive miss.
           bench_miss() {
-            local rc=0
+            local expected="$1" rc=0
+            shift
             "$@" > /tmp/hashmap-bench.log 2>&1 || rc=$?
             tail -1 /tmp/hashmap-bench.log
-            [ "$rc" -eq 1 ]
+            [ "$rc" -eq 1 ] && grep -Fq "$expected" /tmp/hashmap-bench.log &&
+              ! grep -Fq '[-]' /tmp/hashmap-bench.log
           }
           echo "cpu: $(nproc) cores"
           grep -m1 'model name' /proc/cpuinfo || true
           echo "--- md5 brute ---"
-          bench_miss ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t 1
-          bench_miss ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t "$(nproc)"
+          bench_miss "done: 111,111,110 candidates" ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t 1
+          bench_miss "done: 111,111,110 candidates" ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t "$(nproc)"
           echo "--- sha256 brute ---"
-          bench_miss ./hashmap brute -H 0000000000000000000000000000000000000000000000000000000000000000 -c digits --max 7 -t "$(nproc)"
+          bench_miss "done: 11,111,110 candidates" ./hashmap brute -H 0000000000000000000000000000000000000000000000000000000000000000 -c digits --max 7 -t "$(nproc)"
           echo "--- wordlist (10M) ---"
           seq 1 10000000 > /tmp/wl-bench.txt
-          bench_miss ./hashmap wordlist -w /tmp/wl-bench.txt -H 00000000000000000000000000000000 -t "$(nproc)"
-          bench_miss ./hashmap wordlist -w /tmp/wl-bench.txt -H 0000000000000000000000000000000000000000000000000000000000000000 -t "$(nproc)"
+          bench_miss "0/1 hash cracked" ./hashmap wordlist -w /tmp/wl-bench.txt -H 00000000000000000000000000000000 -t "$(nproc)"
+          bench_miss "0/1 hash cracked" ./hashmap wordlist -w /tmp/wl-bench.txt -H 0000000000000000000000000000000000000000000000000000000000000000 -t "$(nproc)"
       - name: Portable static build
         run: make portable
       - name: Sanitizer build

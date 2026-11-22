@@ -189,7 +189,6 @@ static void detect_x86(hm_cpu_t *c)
     memset(c, 0, sizeof(*c));
     snprintf(c->vendor, sizeof(c->vendor), "unknown");
     /* non-x86: everything falls back to the portable kernels */
-    c->sse2 = true;
 }
 
 #endif
@@ -231,7 +230,7 @@ static void collect_features(const hm_cpu_t *c, char *out, size_t n)
 static void choose(hm_cpu_t *c)
 {
     const int mode = cpu_mode();
-    bool wide = c->avx512f && c->avx512bw;
+    bool wide = c->avx512f;
     bool narrow = c->avx2;
 
 #if !defined(__x86_64__) || (!defined(__GNUC__) && !defined(__clang__)) || \
@@ -250,7 +249,7 @@ static void choose(hm_cpu_t *c)
             note("HM_CPU=avx2: capping the kernels at 8 lanes");
         wide = false;
     } else if (mode == HM_CPU_FORCE_AVX512 && !wide) {
-        note("HM_CPU=avx512: this CPU does not report avx512f+bw, "
+        note("HM_CPU=avx512: this CPU does not support AVX-512F, "
              "falling back");
     }
 
@@ -305,11 +304,12 @@ void hm_cpu_report(void)
     printf("cpu:      %s\n", c->brand[0] != '\0' ? c->brand : c->vendor);
     printf("vendor:   %s  family %u model %u stepping %u\n", c->vendor,
            c->family, c->model, c->stepping);
-    printf("logical:  %u\n", c->logical);
+    printf("logical:  %u (online processors; may exceed process affinity)\n", c->logical);
     printf("features: %s\n", g_features[0] != '\0' ? g_features : "(none)");
-    printf("kernels:  md5 %d-lane, sha256 %d-lane (wide %s)\n",
+    printf("kernels:  md5 %d-lane, sha256 %d-lane (md5 %s, sha256 %s)\n",
            t->md5_lanes, t->sha256_lanes,
-           t->md5_avx512 ? "avx512" : "avx2/scalar");
+           t->md5_lanes == 16 ? "avx512f" : (t->md5_lanes == 8 ? "avx2" : "baseline"),
+           t->sha256_lanes == 16 ? "avx512f" : (t->sha256_lanes == 8 ? "avx2" : "baseline"));
     printf("sha-ni:   %s (not used by current kernels)\n", c->sha_ni ? "available" : "unavailable");
     if (getenv("HM_CPU") != NULL)
         printf("override: HM_CPU=%s\n", getenv("HM_CPU"));
@@ -394,7 +394,7 @@ static void init_tune(void)
 
     /* Only a CPU that reports 512-bit vectors can be tuned downwards, and a
      * forced mode must not be overridden. */
-    if (c->avx2 && c->avx512f && c->avx512bw && t.md5_avx512 &&
+    if (c->avx2 && c->avx512f && t.md5_avx512 &&
         cpu_mode() == HM_CPU_AUTO) {
         const int rounds = 2000;
         const double w = time_md5(16, rounds);

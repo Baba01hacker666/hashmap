@@ -225,6 +225,15 @@ int main(int argc, char **argv)
     const char *mode = argv[1];
 
     if (strcmp(mode, "cpu") == 0) {
+        if (argc == 3 && (strcmp(argv[2], "-h") == 0 ||
+                          strcmp(argv[2], "--help") == 0)) {
+            printf("usage: %s cpu\nReport CPU features, selected kernels and accelerator devices.\n", hm_prog);
+            return 0;
+        }
+        if (argc != 2) {
+            fprintf(stderr, "usage: %s cpu [-h|--help]\n", hm_prog);
+            return 2;
+        }
         hm_cpu_report();
         hm_tune_report();
         hm_accelerator_report();

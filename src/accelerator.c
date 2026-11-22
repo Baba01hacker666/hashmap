@@ -1,6 +1,7 @@
 /* Best-effort Linux accelerator discovery; no driver or SDK is required. */
 #include "accelerator.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -13,7 +14,14 @@ static int count_prefix(const char *path, const char *prefix)
     int n = 0;
     if (!d)
         return -1;
-    while ((ent = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (ent == NULL) {
+            if (errno != 0)
+                n = -1;
+            break;
+        }
         const char *p = ent->d_name;
         size_t l = strlen(prefix);
         if (strncmp(p, prefix, l) != 0 || p[l] < '0' || p[l] > '9')

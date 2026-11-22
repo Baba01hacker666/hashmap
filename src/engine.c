@@ -402,32 +402,18 @@ static void idx_to_digits(uint64_t idx, uint8_t *d, int L, int cslen)
     }
 }
 
-/* Set the continuation bit on every digit but the last one. The bytes of a
- * candidate then form a valid UTF-8 sequence whose high bits mark the
- * position of each digit, so a decode can test a whole byte against the
- * charset with one comparison. odom_next keeps the mark intact because it
- * carries into one byte at a time and never touches d[L-1]. */
-static void odom_arm(uint8_t *d, int L)
-{
-    for (int i = 0; i + 1 < L; i++)
-        d[i] = (uint8_t)(d[i] | 0x80u);
-}
-
-/* Advance the odometer. A digit is stored as its value in the low seven bits
- * plus an optional 0x80 continuation mark (odom_arm sets it for the lane
- * renderer); the mark is carried along by the increment, never derived here,
- * so an unarmed digest stays a plain array of small indices. */
+/* Each digit is an unmarked byte index into the charset.  Using the full
+ * byte preserves every entry in the supported 255-byte non-NUL charset. */
 static bool odom_next(uint8_t *d, int L, int cslen)
 {
     for (int i = L - 1; i >= 0; i--) {
-        const unsigned hi = (unsigned)(d[i] & 0x80u);
-        const unsigned v = (unsigned)(d[i] & 0x7fu) + 1u;
+        const unsigned v = (unsigned)d[i] + 1u;
 
         if (v < (unsigned)cslen) {
-            d[i] = (uint8_t)(v | hi);
+            d[i] = (uint8_t)v;
             return true;
         }
-        d[i] = 0; /* carry: this digit returns to zero, unmarked */
+        d[i] = 0;
     }
     return false;
 }
@@ -742,7 +728,7 @@ static int state_load(void)
         if (phase == 1) {
             char th[80];
 
-            if (sscanf(line, "%32s", th) != 1 ||
+            if (sscanf(line, "%79s", th) != 1 ||
                 strcmp(th, g_cfg->targets[tcount].hex) != 0)
                 ok = false;
             tcount++;
@@ -1081,17 +1067,7 @@ static size_t wlist_line(size_t i, const char **out)
 }
 
 
-/* Render the next eight candidates into the eight 64-byte blocks of one
- * compression round. Digests handed in by odom_arm() carry a continuation
- * bit on every digit but the last, and the digit is always the low seven
- * bits, so one masked read per byte expands a whole candidate:
- *
- *     dst[kk] = cs[digs[kk] & 0x7f]
- *
- * That holds for the marked digits and for the unmarked last digit alike,
- * so there is no per-candidate branch and no separate slow path. Returns
- * the number of lanes filled; *end is set when the keyspace wrapped inside
- * the batch (every lane is still a valid, distinct candidate). */
+/* Render the next candidates into independent compression blocks. */
 static int render_lanes(int lanes, uint8_t blk[HM_MD5_LANES][64],
                         uint8_t digs4[HM_MD5_LANES][HM_MAX_PWLEN],
                         uint8_t *digs, int L, int cslen, const char *cs,
@@ -1104,8 +1080,7 @@ static int render_lanes(int lanes, uint8_t blk[HM_MD5_LANES][64],
         if (idx >= hi)
             return n;
         for (int kk = 0; kk < L; kk++) {
-            const uint8_t raw = digs[kk];
-            const uint8_t v = (uint8_t)(raw & 0x7fu);
+            const uint8_t v = digs[kk];
 
             dst[kk] = (uint8_t)cs[v];
             digs4[n][kk] = v;
@@ -1240,12 +1215,16 @@ static void report_found(const hm_target_t *tg, const char *plain, int L)
 
     pthread_mutex_lock(&g_found_mtx);
     for (int i = 0; i < g_cfg->ntargets; i++) {
-        if (g_found_mask[i] != 0 || strcmp(g_cfg->targets[i].hex, tg->hex) != 0)
+        if (g_found_mask[i] != 0 ||
+            (g_cfg->use_bcrypt
+                 ? strcmp(g_cfg->targets[i].hex, tg->hex) != 0
+                 : memcmp(g_cfg->targets[i].bytes, tg->bytes,
+                          (size_t)g_cfg->digest_len) != 0))
             continue;
         g_found_mask[i] = 1;
-        printf("[+] CRACKED  %s  ->  %s  (len %d)\n", tg->hex, plain, L);
+        printf("[+] CRACKED  %s  ->  %s  (len %d)\n", g_cfg->targets[i].hex, plain, L);
         if (g_cfg->outf != NULL) {
-            fprintf(g_cfg->outf, "%s:%s\n", tg->hex, plain);
+            fprintf(g_cfg->outf, "%s:%s\n", g_cfg->targets[i].hex, plain);
             fflush(g_cfg->outf);
         }
         atomic_fetch_add(&g_found_cnt, 1);
@@ -1373,8 +1352,6 @@ static void *worker(void *arg)
                  * chain; with AVX2 the lanes are run in vector registers. */
                 uint8_t blk[HM_MD5_LANES][64];
 
-                /* the lane renderer reads the odometer through the marks */
-                odom_arm(digs, L);
                 for (int l = 0; l < HM_MD5_LANES; l++)
                     memcpy(blk[l], ctx.blk, sizeof(ctx.blk));
                 while (idx < hi) {
@@ -1431,8 +1408,12 @@ static void *worker(void *arg)
                                 found[pre_len + kk] = cs[digs4[l][kk]];
                             found[pre_len + L + post_len] = '\0';
                             report_found(hit, found, L);
-                            if (atomic_load(&hm_stop) != 0)
+                            if (atomic_load(&hm_stop) != 0) {
+                                /* Rendering advanced over the whole batch;
+                                 * only lanes through this hit were checked. */
+                                idx -= (uint64_t)(n - l - 1);
                                 goto stop_span;
+                            }
                         }
                     }
                     done = idx - lo;
@@ -1536,8 +1517,12 @@ static void *worker(void *arg)
                                 found[pre_len + kk] = cs[digs4[l][kk]];
                             found[pre_len + L + post_len] = '\0';
                             report_found(hit, found, L);
-                            if (atomic_load(&hm_stop) != 0)
+                            if (atomic_load(&hm_stop) != 0) {
+                                /* Rendering advanced over the whole batch;
+                                 * only lanes through this hit were checked. */
+                                idx -= (uint64_t)(n - l - 1);
                                 goto stop_span;
+                            }
                         }
                     }
                     done = idx - lo;
@@ -1594,8 +1579,10 @@ static void *worker(void *arg)
                             found[pre_len + kk] = cs[digs[kk]];
                         found[pre_len + L + post_len] = '\0';
                         report_found(hit, found, L);
-                        if (atomic_load(&hm_stop) != 0)
+                        if (atomic_load(&hm_stop) != 0) {
+                            idx++; /* the matching scalar candidate was checked */
                             goto stop_span;
+                        }
                     }
                 }
                 if (!g_wmode && !odom_next(digs, L, g_cfg->cslen))
