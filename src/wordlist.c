@@ -73,14 +73,17 @@ static void wl_hash(const char *line, size_t len, uint8_t *out,
         memcpy(buf, g_wl.salt, (size_t)g_wl.salt_len);
         n = (size_t)g_wl.salt_len;
     }
-    if (len > sizeof(buf) - n - 1)
-        len = sizeof(buf) - n - 1;
+    /* Reserve room for a suffix salt and the terminator bcrypt requires. */
+    size_t suffix_len = g_wl.salt_pre ? 0u : (size_t)g_wl.salt_len;
+    if (len > sizeof(buf) - n - suffix_len - 1)
+        len = sizeof(buf) - n - suffix_len - 1;
     memcpy(buf + n, line, len);
     n += len;
     if (g_wl.salt_len > 0 && !g_wl.salt_pre) {
         memcpy(buf + n, g_wl.salt, (size_t)g_wl.salt_len);
         n += (size_t)g_wl.salt_len;
     }
+    buf[n] = '\0';
     if (g_wl.use_bcrypt && bcrypt_setting != NULL && bcrypt_setting[0] != '\0') {
         char h[HM_BCRYPT_MAX];
 

@@ -494,6 +494,12 @@ printf 'password\nletmein\nabc123\n' > "$TMP/bc.txt"
 [ $? -eq 0 ] && ok "bcrypt: the wordlist finds the password" \
     || bad "bcrypt: the wordlist finds the password"
 
+# The shorter second candidate must not retain bytes from the previous one.
+printf 'password-extra\npassword\n' > "$TMP/bc-prefix.txt"
+"$BIN" wordlist -H "$BC_HASH" -w "$TMP/bc-prefix.txt" -t 1 >/dev/null 2>&1
+[ $? -eq 0 ] && ok "bcrypt: shorter candidate is correctly terminated" \
+    || bad "bcrypt: shorter candidate is correctly terminated"
+
 # the same hash loaded from a file (-F) must work too
 printf '%s\n' "$BC_HASH" > "$TMP/bc-hashes.txt"
 "$BIN" wordlist -F "$TMP/bc-hashes.txt" -w "$TMP/bc.txt" >/dev/null 2>&1
