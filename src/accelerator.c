@@ -47,6 +47,7 @@ void hm_accelerator_report(void)
            access("/dev/kfd", F_OK) == 0 ? "present" : "not detected");
     printf("accelerator backend: none (device nodes do not establish driver usability)\n");
 #else
-    printf("accelerators: detection not supported on this platform; no accelerator backend\n");
+    printf("accelerators: detection not supported on this platform\n");
+    printf("accelerator backend: none\n");
 #endif
 }

@@ -158,42 +158,60 @@ head_ "state / resume"
 # ------------------------------------------------------------------
 STATE="$TMP/resume.state"
 HNF="$(md5_of 'definitelynotfound')"
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 8 --state "$STATE" -t 4 \
-    >"$TMP/res1.log" 2>&1 &
-pid=$!
-sleep 1
-kill -TERM $pid 2>/dev/null
-wait $pid 2>/dev/null
-if [ -s "$STATE" ]; then
+# This space is intentionally far too large to finish before SIGTERM, even on
+# fast CI runners. Wait for the first progress update (which is flushed) before
+# signalling so that the process has installed its handler and begun work.
+interrupt_run() {
+    local log="$1" pid ready=0
+    "$BIN" brute -H "$HNF" -c digits --min 1 --max 12 --state "$STATE" -t 4 \
+        >"$log" 2>&1 &
+    pid=$!
+    for _ in {1..100}; do
+        if grep -q 'tried' "$log"; then
+            ready=1
+            break
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -TERM "$pid" 2>/dev/null || ready=0
+    wait "$pid" 2>/dev/null
+    [ "$ready" -eq 1 ]
+}
+
+if interrupt_run "$TMP/res1.log" && [ -s "$STATE" ]; then
     ok "SIGTERM saves state file"
+    grep -q "HMSTATE 2" "$STATE" && ok "state has magic" || bad "state has magic"
+
+    # A short mismatched configuration prevents a missing/broken state from
+    # accidentally starting an effectively unbounded fresh search.
+    "$BIN" brute -H "$HNF" -c lower --min 1 --max 1 --state "$STATE" -t 1 \
+        >/dev/null 2>&1
+    [ $? -ne 0 ] && ok "state refuses mismatched config" || bad "state refuses mismatched config"
+
+    if interrupt_run "$TMP/res2.log" && [ -s "$STATE" ] &&
+       grep -q 'resumed from state' "$TMP/res2.log"; then
+        first="$(grep -o 'done: [0-9,]* candidates' "$TMP/res1.log" | grep -o '[0-9,]*' | tr -d ,)"
+        second="$(grep -o 'done: [0-9,]* candidates' "$TMP/res2.log" | grep -o '[0-9,]*' | tr -d ,)"
+        if [ -n "$first" ] && [ -n "$second" ] &&
+           [ "$((first + second))" -le 1111111111110 ] &&
+           [ "$((first + second))" -gt 0 ]; then
+            ok "resume continues interrupted work"
+        else
+            bad "resume continues interrupted work"
+        fi
+    else
+        bad "resume continues interrupted work"
+    fi
 else
     bad "SIGTERM saves state file"
-fi
-grep -q "HMSTATE 2" "$STATE" && ok "state has magic" || bad "state has magic"
-
-# resume with a *different* config must be refused
-"$BIN" brute -H "$HNF" -c lower --min 1 --max 8 --state "$STATE" \
-    >/dev/null 2>&1
-[ $? -ne 0 ] && ok "state refuses mismatched config" || bad "state refuses mismatched config"
-
-# resume and let it finish; total work across runs must equal keyspace
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 8 --state "$STATE" -t 4 \
-    >"$TMP/res2.log" 2>&1 &
-pid=$!
-sleep 1
-kill -TERM $pid 2>/dev/null
-wait $pid 2>/dev/null
-
-total="$(grep -o 'done: [0-9,]* candidates' "$TMP/res1.log" | grep -o '[0-9,]*' | tr -d ,)"
-total=$((total + $(grep -o 'done: [0-9,]* candidates' "$TMP/res2.log" | grep -o '[0-9,]*' | tr -d ,)))
-if [ "$total" -le 111111110 ] && [ "$total" -gt 0 ]; then
-    ok "resume covers work exactly once ($total <= 111111110)"
-else
-    bad "resume covers work exactly once (total=$total)"
+    bad "state has magic"
+    bad "state refuses mismatched config"
+    bad "resume continues interrupted work"
 fi
 
 # fresh run of the whole space matches the reported keyspace
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 7 >"$TMP/full.log" 2>&1
+"$BIN" brute -H "$HNF" -c digits --min 1 --max 7 -t 4 >"$TMP/full.log" 2>&1
 grep -q "done: 11,111,110 candidates" "$TMP/full.log" \
     && ok "full keyspace count exact" || bad "full keyspace count exact"
 

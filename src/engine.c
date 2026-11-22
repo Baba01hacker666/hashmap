@@ -1676,6 +1676,8 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     double t0;
     pthread_t *tids;
     int nfound;
+    int nstarted = 0;
+    bool thread_error = false;
     bool ovf;
 
     g_cfg = cfg;
@@ -1775,16 +1777,19 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     for (int i = 0; i < cfg->nthreads; i++) {
         if (pthread_create(&tids[i], NULL, worker, (void *)(intptr_t)i) != 0) {
             fprintf(stderr, "[-] pthread_create failed\n");
+            thread_error = true;
             atomic_store(&hm_stop, 1);
+            break;
         }
+        nstarted++;
     }
 
-    while (atomic_load(&g_workers_done) < cfg->nthreads) {
+    while (atomic_load(&g_workers_done) < nstarted) {
         hm_sleep_ms(200);
         if (atomic_load(&hm_stop) == 0)
             engine_progress_tick(total_space, t0);
     }
-    for (int i = 0; i < cfg->nthreads; i++)
+    for (int i = 0; i < nstarted; i++)
         pthread_join(tids[i], NULL);
 
     /* count remaining work */
@@ -1809,7 +1814,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     }
 
     nfound = atomic_load(&g_found_cnt);
-    *finished = (remaining == 0 ||
+    *finished = !thread_error && (remaining == 0 ||
                  (cfg->rec == NULL && nfound >= cfg->ntargets));
 
     printf("\r\033[K");
@@ -1843,7 +1848,7 @@ int hm_engine_run(hm_cfg_t *cfg, int *finished)
     free(tids);
     free(g_found_mask);
     free(g_w);
-    return nfound;
+    return thread_error ? -1 : nfound;
 }
 
 /* ------------------------------------------------------------------ */
