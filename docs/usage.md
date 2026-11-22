@@ -11,9 +11,14 @@ hashmap <mode> [options]
 | `map` | write a `digest -> plaintext` map file for a whole keyspace |
 | `search` | look hashes up inside a map file or an HMARCH2 archive |
 | `wordlist` | match target hashes against a wordlist |
+| `cpu` | report CPU capabilities, chosen kernels and visible accelerator devices |
 
 `hashmap --help` shows the mode list and the shared flags,
 `hashmap <mode> --help` shows everything that mode accepts.
+
+## CPU and accelerator report
+
+Run `hashmap cpu` to inspect detection and the selected SIMD kernels. See [CPU and accelerator detection](cpu.md) for environment overrides, autotuning and GPU detection limitations.
 
 ## Shared flags
 

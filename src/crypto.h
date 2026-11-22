@@ -35,6 +35,18 @@ void hm_sha256(const uint8_t *msg, size_t len, uint8_t out[32]);
 /* single-block 4-way SHA-256 compression (cracking fast paths) */
 void hm_sha256_transform4(uint32_t st[4][8], const uint8_t blk[4][64]);
 
+/* Eight independent single-block compressions at once, runtime dispatched:
+ * AVX2 vector lanes on x86-64, otherwise two 4-way batches. Same state and
+ * block layout, one lane per entry. */
+void hm_md5_transform8x(uint32_t st[8][4], const uint8_t blk[8][64]);
+void hm_sha256_transform8x(uint32_t st[8][8], const uint8_t blk[8][64]);
+
+/* Sixteen independent compressions, runtime dispatched: one AVX-512 round on
+ * CPUs that have it, otherwise two eight-lane batches. All sixteen lanes are
+ * always consumed, so a caller can batch sixteen candidates everywhere. */
+void hm_md5_transform16x(uint32_t st[16][4], const uint8_t blk[16][64]);
+void hm_sha256_transform16x(uint32_t st[16][8], const uint8_t blk[16][64]);
+
 /* incremental SHA-256 for streaming checksums */
 typedef struct {
     uint32_t h[8];

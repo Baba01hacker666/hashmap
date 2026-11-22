@@ -13,6 +13,7 @@ jobs:
   strict:
     name: strict build + tests (gcc)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build with maximum warnings as errors
@@ -20,7 +21,7 @@ jobs:
       - name: Build the archive companion
         run: make hashmap-archive
       - name: Run test suite
-        run: ./tests/run.sh ./hashmap
+        run: make test
       - name: Check the map archive and RSM1 codecs
         run: |
           make archive-test
@@ -42,17 +43,27 @@ jobs:
       - name: Speed benchmarks (GH runner)
         run: |
           set -eu
+          # Misses intentionally return 1; preserve real errors instead of
+          # letting pipefail fail on a successful exhaustive miss.
+          bench_miss() {
+            local expected="$1" rc=0
+            shift
+            "$@" > /tmp/hashmap-bench.log 2>&1 || rc=$?
+            tail -1 /tmp/hashmap-bench.log
+            [ "$rc" -eq 1 ] && grep -Fq "$expected" /tmp/hashmap-bench.log &&
+              ! grep -Fq '[-]' /tmp/hashmap-bench.log
+          }
           echo "cpu: $(nproc) cores"
           grep -m1 'model name' /proc/cpuinfo || true
           echo "--- md5 brute ---"
-          ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t 1 2>&1 | tail -1
-          ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t "$(nproc)" 2>&1 | tail -1
+          bench_miss "done: 111,111,110 candidates" ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t 1
+          bench_miss "done: 111,111,110 candidates" ./hashmap brute -H 00000000000000000000000000000000 -c digits --max 8 -t "$(nproc)"
           echo "--- sha256 brute ---"
-          ./hashmap brute -H 0000000000000000000000000000000000000000000000000000000000000000 -c digits --max 7 -t "$(nproc)" 2>&1 | tail -1
+          bench_miss "done: 11,111,110 candidates" ./hashmap brute -H 0000000000000000000000000000000000000000000000000000000000000000 -c digits --max 7 -t "$(nproc)"
           echo "--- wordlist (10M) ---"
           seq 1 10000000 > /tmp/wl-bench.txt
-          ./hashmap wordlist -w /tmp/wl-bench.txt -H 00000000000000000000000000000000 -t "$(nproc)" 2>&1 | tail -1
-          ./hashmap wordlist -w /tmp/wl-bench.txt -H 0000000000000000000000000000000000000000000000000000000000000000 -t "$(nproc)" 2>&1 | tail -1
+          bench_miss "0/1 hash cracked" ./hashmap wordlist -w /tmp/wl-bench.txt -H 00000000000000000000000000000000 -t "$(nproc)"
+          bench_miss "0/1 hash cracked" ./hashmap wordlist -w /tmp/wl-bench.txt -H 0000000000000000000000000000000000000000000000000000000000000000 -t "$(nproc)"
       - name: Portable static build
         run: make portable
       - name: Sanitizer build
@@ -63,6 +74,7 @@ jobs:
   clang:
     name: strict build (clang)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build with clang
@@ -72,14 +84,15 @@ jobs:
           make clean
           make CC=clang
       - name: Run test suite
-        run: ./tests/run.sh ./hashmap
+        run: make CC=clang test
 
   macos:
     name: build (macos)
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: make
       - name: Quick test
-        run: ./tests/run.sh ./hashmap
+        run: make test

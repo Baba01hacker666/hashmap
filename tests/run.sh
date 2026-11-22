@@ -44,13 +44,6 @@ sha256_of() {
         printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
     fi
 }
-sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha256sum | cut -d' ' -f1
-    else
-        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
-    fi
-}
 file_md5() {
     if command -v md5sum >/dev/null 2>&1; then
         md5sum "$1" | cut -d' ' -f1
@@ -165,44 +158,89 @@ head_ "state / resume"
 # ------------------------------------------------------------------
 STATE="$TMP/resume.state"
 HNF="$(md5_of 'definitelynotfound')"
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 8 --state "$STATE" -t 4 \
-    >"$TMP/res1.log" 2>&1 &
-pid=$!
-sleep 1
-kill -TERM $pid 2>/dev/null
-wait $pid 2>/dev/null
-if [ -s "$STATE" ]; then
+# This space is intentionally far too large to finish before SIGTERM, even on
+# fast CI runners. Wait for the first progress update (which is flushed) before
+# signalling so that the process has installed its handler and begun work.
+interrupt_run() {
+    local log="$1" pid ready=0
+    "$BIN" brute -H "$HNF" -c digits --min 1 --max 12 --state "$STATE" -t 4 \
+        >"$log" 2>&1 &
+    pid=$!
+    for _ in {1..100}; do
+        if grep -q 'tried' "$log"; then
+            ready=1
+            break
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -TERM "$pid" 2>/dev/null || ready=0
+    wait "$pid" 2>/dev/null
+    [ "$ready" -eq 1 ]
+}
+
+if interrupt_run "$TMP/res1.log" && [ -s "$STATE" ]; then
     ok "SIGTERM saves state file"
+    grep -q "HMSTATE 2" "$STATE" && ok "state has magic" || bad "state has magic"
+
+    # A short mismatched configuration prevents a missing/broken state from
+    # accidentally starting an effectively unbounded fresh search.
+    "$BIN" brute -H "$HNF" -c lower --min 1 --max 1 --state "$STATE" -t 1 \
+        >/dev/null 2>&1
+    [ $? -ne 0 ] && ok "state refuses mismatched config" || bad "state refuses mismatched config"
+
+    if interrupt_run "$TMP/res2.log" && [ -s "$STATE" ] &&
+       grep -q 'resumed from state' "$TMP/res2.log"; then
+        first="$(grep -o 'done: [0-9,]* candidates' "$TMP/res1.log" | grep -o '[0-9,]*' | tr -d ,)"
+        second="$(grep -o 'done: [0-9,]* candidates' "$TMP/res2.log" | grep -o '[0-9,]*' | tr -d ,)"
+        if [ -n "$first" ] && [ -n "$second" ] &&
+           [ "$((first + second))" -le 1111111111110 ] &&
+           [ "$second" -gt 0 ]; then
+            ok "resume continues interrupted work"
+        else
+            bad "resume continues interrupted work"
+        fi
+    else
+        bad "resume continues interrupted work"
+    fi
 else
     bad "SIGTERM saves state file"
-fi
-grep -q "HMSTATE 2" "$STATE" && ok "state has magic" || bad "state has magic"
-
-# resume with a *different* config must be refused
-"$BIN" brute -H "$HNF" -c lower --min 1 --max 8 --state "$STATE" \
-    >/dev/null 2>&1
-[ $? -ne 0 ] && ok "state refuses mismatched config" || bad "state refuses mismatched config"
-
-# resume and let it finish; total work across runs must equal keyspace
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 8 --state "$STATE" -t 4 \
-    >"$TMP/res2.log" 2>&1 &
-pid=$!
-sleep 1
-kill -TERM $pid 2>/dev/null
-wait $pid 2>/dev/null
-
-total="$(grep -o 'done: [0-9,]* candidates' "$TMP/res1.log" | grep -o '[0-9,]*' | tr -d ,)"
-total=$((total + $(grep -o 'done: [0-9,]* candidates' "$TMP/res2.log" | grep -o '[0-9,]*' | tr -d ,)))
-if [ "$total" -le 111111110 ] && [ "$total" -gt 0 ]; then
-    ok "resume covers work exactly once ($total <= 111111110)"
-else
-    bad "resume covers work exactly once (total=$total)"
+    bad "state has magic"
+    bad "state refuses mismatched config"
+    bad "resume continues interrupted work"
 fi
 
 # fresh run of the whole space matches the reported keyspace
-"$BIN" brute -H "$HNF" -c digits --min 1 --max 7 >"$TMP/full.log" 2>&1
+"$BIN" brute -H "$HNF" -c digits --min 1 --max 7 -t 4 >"$TMP/full.log" 2>&1
 grep -q "done: 11,111,110 candidates" "$TMP/full.log" \
     && ok "full keyspace count exact" || bad "full keyspace count exact"
+
+# A first hit in a SIMD batch must not skip the remaining unchecked lanes.
+for alg in md5 sha256; do
+    for pair in 00:01 07:08 15:16; do
+        left="${pair%:*}"; right="${pair#*:}"
+        if [ "$alg" = md5 ]; then
+            HLEFT="$(md5_of "$left")"; HRIGHT="$(md5_of "$right")"
+        else
+            HLEFT="$(sha256_of "$left")"; HRIGHT="$(sha256_of "$right")"
+        fi
+        BSTATE="$TMP/batch-$alg-$left.state"
+        "$BIN" brute -H "$HLEFT" -H "$HRIGHT" -c digits --min 2 --max 2 \
+            --first --state "$BSTATE" -t 1 >"$TMP/batch-first.log" 2>&1
+        first_rc=$?
+        "$BIN" brute -H "$HLEFT" -H "$HRIGHT" -c digits --min 2 --max 2 \
+            --first --state "$BSTATE" -t 1 >"$TMP/batch-resume.log" 2>&1
+        second_rc=$?
+        if [ "$first_rc" -eq 0 ] && [ "$second_rc" -eq 0 ] &&
+           grep -q " ->  $left " "$TMP/batch-first.log" &&
+           grep -q 'resumed from state' "$TMP/batch-resume.log" &&
+           grep -q " ->  $right " "$TMP/batch-resume.log"; then
+            ok "$alg: resume visits $right after first hit $left"
+        else
+            bad "$alg: resume visits $right after first hit $left"
+        fi
+    done
+done
 
 # state file removed when the run completes
 rm -f "$STATE"
@@ -456,6 +494,12 @@ printf 'password\nletmein\nabc123\n' > "$TMP/bc.txt"
 [ $? -eq 0 ] && ok "bcrypt: the wordlist finds the password" \
     || bad "bcrypt: the wordlist finds the password"
 
+# The shorter second candidate must not retain bytes from the previous one.
+printf 'password-extra\npassword\n' > "$TMP/bc-prefix.txt"
+"$BIN" wordlist -H "$BC_HASH" -w "$TMP/bc-prefix.txt" -t 1 >/dev/null 2>&1
+[ $? -eq 0 ] && ok "bcrypt: shorter candidate is correctly terminated" \
+    || bad "bcrypt: shorter candidate is correctly terminated"
+
 # the same hash loaded from a file (-F) must work too
 printf '%s\n' "$BC_HASH" > "$TMP/bc-hashes.txt"
 "$BIN" wordlist -F "$TMP/bc-hashes.txt" -w "$TMP/bc.txt" >/dev/null 2>&1
@@ -562,6 +606,136 @@ if [ -x "$ARCH" ]; then
 else
     printf '  \033[33mSKIP\033[0m archive tests: ./hashmap-archive not built\n'
 fi
+
+
+# ------------------------------------------------------------------
+head_ "indexed multi-target matching"
+# ------------------------------------------------------------------
+A="$(md5_of 0)"; B="$(md5_of 1)"; C="$(md5_of 2)"; D="$(md5_of 3)"
+printf '0\n1\n2\n3\n' >"$TMP/multi-words.txt"
+"$BIN" brute -H "$A" -H "$A" -H "$B" -H "$C" -H "$D" -c digits \
+    --min 1 --max 1 -t 2 >"$TMP/multi-brute.txt" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/multi-brute.txt")" -eq 5 ] \
+    && ok "brute: indexed targets including duplicates" \
+    || bad "brute: indexed targets including duplicates"
+"$BIN" wordlist -H "$A" -H "$A" -H "$B" -H "$C" -H "$D" \
+    -w "$TMP/multi-words.txt" -t 2 >"$TMP/multi-wordlist.txt" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/multi-wordlist.txt")" -eq 5 ] \
+    && ok "wordlist: indexed targets including duplicates" \
+    || bad "wordlist: indexed targets including duplicates"
+
+# Full-byte charset indices must survive enumeration in both batch paths and
+# the scalar fallback. The high bytes occupy indices 0..127; '!' is index 128.
+head_ "large byte charsets"
+LARGE_CS=""
+for i in {128..255} {33..55}; do
+    [ "$i" -eq 43 ] && continue # '+' is the charset separator
+    printf -v ch "\\$(printf '%03o' "$i")"
+    LARGE_CS="$LARGE_CS$ch"
+done
+printf -v high_byte '\200'
+large_plain="!$high_byte"
+for alg in md5 sha256; do
+    if [ "$alg" = md5 ]; then large_hash="$(md5_of "$large_plain")"
+    else large_hash="$(sha256_of "$large_plain")"; fi
+    "$BIN" brute -H "$large_hash" -c "$LARGE_CS" --min 2 --max 2 -t 1 \
+        >"$TMP/large-$alg.log" 2>&1
+    [ $? -eq 0 ] && ok "$alg: charset index 128 in multi-byte candidate" \
+        || bad "$alg: charset index 128 in multi-byte candidate"
+done
+# Verify complete enumeration, not just one hit: MD5 and SHA-256 use the
+# batched paths, SHA-1 uses the scalar path. Every fixed-size record must have
+# a unique valid pair, yielding all 150 x 150 combinations exactly once.
+for alg in md5 sha256 sha1; do
+    case "$alg" in md5) digest_bytes=16 ;; sha256) digest_bytes=32 ;; sha1) digest_bytes=20 ;; esac
+    "$BIN" map -o "$TMP/large-$alg.hmmap" --state "$TMP/large-$alg.state" \
+        --algo "$alg" -c "$LARGE_CS" --min 2 --max 2 -t 1 \
+        >"$TMP/large-map-$alg.log" 2>&1
+    map_rc=$?
+    header_bytes="$(printf 'HMMAP 2\nalgo %s\ndlen %s\n' "$alg" "$digest_bytes" | wc -c | tr -d ' ')"
+    if [ "$map_rc" -eq 0 ] &&
+       LC_ALL=C od -An -v -tu1 "$TMP/large-$alg.hmmap" | awk -v skip="$header_bytes" -v digest="$digest_bytes" '
+        function valid(n) { return (n >= 128 && n <= 255) || (n >= 33 && n <= 55 && n != 43) }
+        {
+            for (i = 1; i <= NF; i++) {
+                pos++
+                if (pos <= skip) continue
+                offset = (pos - skip - 1) % (digest + 3)
+                if (offset == digest && $i != 2) bad = 1
+                if (offset == digest + 1) first = $i
+                if (offset == digest + 2) {
+                    second = $i
+                    key = first ":" second
+                    if (!valid(first) || !valid(second) || seen[key]++) bad = 1
+                    records++
+                }
+            }
+        }
+        END { if (bad || records != 22500 || (pos - skip) % (digest + 3) != 0) exit 1 }
+       '; then
+        ok "$alg: all 22500 large-charset pairs occur exactly once"
+    else
+        bad "$alg: all 22500 large-charset pairs occur exactly once"
+    fi
+done
+
+# Case variants represent the same digest and must all be reported.
+upper_A="$(printf '%s' "$A" | tr '[:lower:]' '[:upper:]')"
+"$BIN" brute -H "$A" -H "$upper_A" -c digits --min 1 --max 1 -t 1 \
+    >"$TMP/case-brute.log" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/case-brute.log")" -eq 2 ] &&
+    grep -q "$upper_A" "$TMP/case-brute.log" \
+    && ok "brute: duplicate digest with different hex case" \
+    || bad "brute: duplicate digest with different hex case"
+
+"$BIN" brute -H "$A" -H "$upper_A" -H "$B" -H "$C" -H "$D" \
+    -c digits --min 1 --max 1 -t 1 >"$TMP/case-index.log" 2>&1
+[ $? -eq 0 ] && [ "$(grep -c CRACKED "$TMP/case-index.log")" -eq 5 ] &&
+    grep -q "$upper_A" "$TMP/case-index.log" \
+    && ok "brute: indexed duplicate digest with different hex case" \
+    || bad "brute: indexed duplicate digest with different hex case"
+
+# ------------------------------------------------------------------
+head_ "CPU and accelerator detection"
+# ------------------------------------------------------------------
+for flag in -h --help; do
+    out="$(HM_CPU_VERBOSE=1 "$BIN" cpu "$flag" 2>"$TMP/cpu-help.err")"
+    if [ $? -eq 0 ] && echo "$out" | grep -qi '^usage:' &&
+       ! echo "$out" | grep -q '^features:' && [ ! -s "$TMP/cpu-help.err" ]; then
+        ok "cpu: $flag shows help without tuning"
+    else
+        bad "cpu: $flag shows help without tuning"
+    fi
+done
+"$BIN" cpu --bogus >/dev/null 2>&1
+[ $? -eq 2 ] && ok "cpu: unknown option is rejected" || bad "cpu: unknown option is rejected"
+
+# the cpu mode reports the machine and the kernels picked for it
+out="$("$BIN" cpu 2>/dev/null)"
+echo "$out" | grep -q "^features:" && ok "cpu: features are reported" \
+    || bad "cpu: features are reported"
+echo "$out" | grep -qE "^kernels:  md5 (4|8|16)-lane" \
+    && ok "cpu: the md5 kernel width is reported" \
+    || bad "cpu: the md5 kernel width is reported"
+echo "$out" | grep -q "^tuned:" && ok "cpu: autotune reports a choice" \
+    || bad "cpu: autotune reports a choice"
+echo "$out" | grep -qE 'md5 (avx512f|avx2|baseline), sha256 (avx512f|avx2|baseline)' \
+    && ok "cpu: reports each algorithm ISA separately" \
+    || bad "cpu: reports each algorithm ISA separately"
+echo "$out" | grep -q "^accelerator backend: none" && ok "accelerator: backend availability is reported" \
+    || bad "accelerator: backend availability is reported"
+HM_CPU=off "$BIN" cpu | grep -q '^kernels:  md5 4-lane, sha256 4-lane' \
+    && ok "cpu: off selects baseline" || bad "cpu: off selects baseline"
+HM_CPU=avx2 "$BIN" cpu | grep -qE '^kernels:  md5 (4|8)-lane, sha256 (4|8)-lane' \
+    && ok "cpu: avx2 limits width" || bad "cpu: avx2 limits width"
+
+# every dispatch mode must still crack the same hash
+for mode in off avx2 avx512; do
+    HM_CPU=$mode "$BIN" brute -H 202cb962ac59075b964b07152d234b70 -c digits \
+        --min 3 --max 3 >/dev/null 2>&1
+    [ $? -eq 0 ] && ok "cpu: HM_CPU=$mode cracks" \
+        || bad "cpu: HM_CPU=$mode cracks"
+done
 
 # ------------------------------------------------------------------
 printf '\n\033[1mpassed: %d  failed: %d\033[0m\n' "$PASS" "$FAIL"

@@ -7,7 +7,10 @@ src/hashmap.h    shared types, limits, mode entry points
 src/compat.h     platform feature-test macros (include it first)
 src/util.c       timing, formatting, signals, portable getopt_long
 src/charset.c    charset presets, unions, escapes
-src/crypto.c     MD5 core, SHA-1, SHA-256
+src/cpu.c        runtime CPU feature detection and SIMD autotuning
+src/accelerator.c best-effort accelerator device detection
+src/crypto.c     MD5 core, SHA-1, SHA-256 and SIMD kernels
+src/match.c      exact multi-target digest index
 src/engine.c     threaded keyspace walker, state save/load
 src/digest.c     digest mode
 src/brute.c      brute mode
@@ -15,7 +18,8 @@ src/map.c        map mode
 src/hmar.c       streaming HMARCH1/HMARCH2 archive decoder for search
 src/search.c     search mode
 src/main.c       mode dispatch and usage texts
-tests/run.sh     test suite
+tests/run.sh     CLI test suite
+tests/core.c     differential SIMD and matcher tests
 docs/            the documentation you are reading
 ```
 
@@ -23,7 +27,7 @@ docs/            the documentation you are reading
 
 | target | what it does |
 |--------|--------------|
-| `make` | optimized build (`-O3 -march=native -flto`) |
+| `make` | optimized build (`-O3 -flto`, runtime SIMD dispatch) |
 | `make portable` | static binary, no `-march=native` (release artifacts) |
 | `make debug` | ASan + UBSan build |
 | `make test` | run the C test suite |

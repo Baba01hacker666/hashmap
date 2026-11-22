@@ -7,6 +7,7 @@ Fast multi-threaded hash toolkit in pure C — no deps, just `cc` and pthreads.
 - **map** — build a `digest -> plaintext` map of a keyspace
 - **search** — look hashes up inside a map file or an HMARCH2 archive
 - **wordlist** — match target hashes against a password list (MD5, SHA-256, bcrypt)
+- **cpu** — report CPU features, selected kernels and visible accelerator devices
 
 Every long run is **resumable**: stop it, and it continues exactly where it
 left off — no candidate is ever tried twice or skipped.
@@ -14,13 +15,13 @@ left off — no candidate is ever tried twice or skipped.
 ## Build
 
 ```sh
-make            # -O3 -march=native -flto, strict warnings as errors
+make            # -O3 -flto, runtime SIMD dispatch, strict warnings as errors
 make portable   # static binary for release tarballs
 make debug      # ASan + UBSan build
 make test       # run the test suite
 ```
 
-Requires a C11 compiler (gcc or clang) and pthreads.
+Requires a C11 compiler (gcc or clang) and pthreads. Run `hashmap cpu` to see the runtime choices. `HM_CPU=off`, `HM_CPU=avx2`, and `HM_CPU=avx512` control the SIMD ceiling; unsupported instructions are never forced. [CPU and accelerator detection](docs/cpu.md) describes the details and limitations.
 
 ## Lossless map storage
 
@@ -96,6 +97,8 @@ Exit codes: `0` done, `1` not solved / interrupted, `2` usage error.
 | file | topic |
 |------|-------|
 | [docs/usage.md](docs/usage.md) | every mode and flag, charsets, map file format |
+| [docs/cpu.md](docs/cpu.md) | runtime dispatch and accelerator detection |
+| [docs/performance.md](docs/performance.md) | benchmark results and limitations |
 | [docs/archive.md](docs/archive.md) | lossless map backup and restore, HMARCH1 compatibility, measured sizes |
 | [Map archive research](research/map_archive/README.md) | ordered map records: counting argument, Lean proof and ranked exceptions |
 | [RSM1 research](research/rsm1/README.md) | static byte maps, token coding, cache predictions, Python and C++ codecs |
